@@ -3,8 +3,12 @@
   "displayName": "LLM Copilot",
   "description": "AI-powered inline completions with smart scaffolding — GitHub Copilot-level features using any LLM",
   "version": "2.0.0",
-  "publisher": "RA King",
+  "publisher": "ra-king",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RA-King/llm-copilot.git"
+  },
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -363,7 +367,8 @@
         {
           "type": "webview",
           "id": "llmCopilot.chatView",
-          "name": "AI Chat"
+          "name": "AI Chat",
+          "icon": "images/sidebar-icon.svg"
         }
       ]
     }

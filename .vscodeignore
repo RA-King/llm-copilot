@@ -1,0 +1,28 @@
+# Everything not listed here ships in the VSIX. The extension loads no files
+# from disk at runtime, so only out/, images/, README.md and LICENSE are needed
+# (package.json is always included by vsce).
+
+# Sources — compiled output in out/ is what ships.
+src/**
+test/**
+**/*.ts
+**/*.map
+**/*.patch
+
+# Build & tooling config
+tsconfig.json
+tsconfig.test.json
+jest.config.js
+.github/**
+.vscode/**
+.vscode-test/**
+
+# Local tooling & editor state
+.claude/**
+.gitignore
+.vscodeignore
+
+# OS cruft and previous builds
+.DS_Store
+**/.DS_Store
+*.vsix

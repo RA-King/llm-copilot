@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <!-- Code caret: the editor cursor LLM Copilot writes at. -->
+  <path d="M4 7.5 L8.5 12 L4 16.5" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Ghost-text bar: the inline suggestion. -->
+  <path d="M11 16.5 H17" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  <!-- Sparkle: the AI. -->
+  <path d="M17 4 L18.15 6.85 L21 8 L18.15 9.15 L17 12 L15.85 9.15 L13 8 L15.85 6.85 Z"
+        fill="currentColor"/>
+</svg>
