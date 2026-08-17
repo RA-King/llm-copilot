@@ -553,4 +553,4 @@ Key modules:
 
 ## License
 
-See the repository for license details.
+Released under the [MIT License](LICENSE). © 2026 RA King.

@@ -4,6 +4,7 @@
   "description": "AI-powered inline completions with smart scaffolding — GitHub Copilot-level features using any LLM",
   "version": "2.0.0",
   "publisher": "RA King",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.74.0"
   },
