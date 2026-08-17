@@ -1,0 +1,386 @@
+{
+  "name": "llm-copilot",
+  "displayName": "LLM Copilot",
+  "description": "AI-powered inline completions with smart scaffolding — GitHub Copilot-level features using any LLM",
+  "version": "2.0.0",
+  "publisher": "RA King",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "ai",
+    "copilot",
+    "autocomplete",
+    "llm",
+    "ollama",
+    "openai",
+    "anthropic"
+  ],
+  "icon": "images/icon.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "llmCopilot.triggerCompletion",
+        "title": "LLM Copilot: Trigger Inline Completion"
+      },
+      {
+        "command": "llmCopilot.inlineChat",
+        "title": "LLM Copilot: Inline Chat"
+      },
+      {
+        "command": "llmCopilot.openChat",
+        "title": "LLM Copilot: Open AI Chat"
+      },
+      {
+        "command": "llmCopilot.openSettings",
+        "title": "LLM Copilot: Open Settings"
+      },
+      {
+        "command": "llmCopilot.testConnection",
+        "title": "LLM Copilot: Test Connection"
+      },
+      {
+        "command": "llmCopilot.toggleEnabled",
+        "title": "LLM Copilot: Toggle Enable/Disable"
+      },
+      {
+        "command": "llmCopilot.explainCode",
+        "title": "LLM Copilot: Explain Selected Code"
+      },
+      {
+        "command": "llmCopilot.fixCode",
+        "title": "LLM Copilot: Fix Selected Code"
+      },
+      {
+        "command": "llmCopilot.refactorCode",
+        "title": "LLM Copilot: Refactor Selected Code"
+      },
+      {
+        "command": "llmCopilot.generateDocstring",
+        "title": "LLM Copilot: Generate Doc Comment"
+      },
+      {
+        "command": "llmCopilot.generateConstructor",
+        "title": "LLM Copilot: Generate Constructor"
+      },
+      {
+        "command": "llmCopilot.generateGettersSetters",
+        "title": "LLM Copilot: Generate Getters & Setters"
+      },
+      {
+        "command": "llmCopilot.implementInterface",
+        "title": "LLM Copilot: Implement Interface / Abstract Methods"
+      },
+      {
+        "command": "llmCopilot.generateAllMembers",
+        "title": "LLM Copilot: Generate All Class Members"
+      },
+      {
+        "command": "llmCopilot.generateTests",
+        "title": "LLM Copilot: Generate Unit Tests"
+      },
+      {
+        "command": "llmCopilot.generateCommitMessage",
+        "title": "LLM Copilot: Generate Commit Message"
+      },
+      {
+        "command": "llmCopilot.showSelectionActions",
+        "title": "LLM Copilot: Show Selection Actions"
+      },
+      {
+        "command": "llmCopilot.listClaudeCodeModels",
+        "title": "LLM Copilot: List Claude Code Models"
+      },
+      {
+        "command": "llmCopilot.diagnoseClaudeCode",
+        "title": "LLM Copilot: Diagnose Claude Code Connection"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "llmCopilot.inlineChat",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "llmCopilot.triggerCompletion",
+        "key": "ctrl+shift+space",
+        "mac": "cmd+shift+space",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "llmCopilot.openChat",
+        "key": "ctrl+alt+i",
+        "mac": "ctrl+cmd+i"
+      },
+      {
+        "command": "llmCopilot.explainCode",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "llmCopilot.refactorCode",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "llmCopilot.generateTests",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "llmCopilot.generateDocstring",
+        "key": "ctrl+shift+d",
+        "mac": "cmd+shift+d",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "llmCopilot.generateCommitMessage",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m"
+      },
+      {
+        "command": "llmCopilot.showSelectionActions",
+        "key": "ctrl+space",
+        "mac": "ctrl+space",
+        "when": "editorHasSelection && editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "llmCopilot.inlineChat",
+          "when": "editorTextFocus",
+          "group": "llmCopilot@0"
+        },
+        {
+          "command": "llmCopilot.explainCode",
+          "when": "editorHasSelection",
+          "group": "llmCopilot@1"
+        },
+        {
+          "command": "llmCopilot.fixCode",
+          "when": "editorHasSelection",
+          "group": "llmCopilot@2"
+        },
+        {
+          "command": "llmCopilot.refactorCode",
+          "when": "editorHasSelection",
+          "group": "llmCopilot@3"
+        },
+        {
+          "command": "llmCopilot.generateDocstring",
+          "when": "editorTextFocus",
+          "group": "llmCopilot@4"
+        },
+        {
+          "command": "llmCopilot.generateConstructor",
+          "when": "editorTextFocus",
+          "group": "llmCopilot@5"
+        },
+        {
+          "command": "llmCopilot.generateGettersSetters",
+          "when": "editorTextFocus",
+          "group": "llmCopilot@6"
+        },
+        {
+          "command": "llmCopilot.implementInterface",
+          "when": "editorTextFocus",
+          "group": "llmCopilot@7"
+        },
+        {
+          "command": "llmCopilot.generateAllMembers",
+          "when": "editorTextFocus",
+          "group": "llmCopilot@8"
+        },
+        {
+          "command": "llmCopilot.generateTests",
+          "when": "editorHasSelection",
+          "group": "llmCopilot@9"
+        },
+        {
+          "command": "llmCopilot.showSelectionActions",
+          "when": "editorHasSelection",
+          "group": "llmCopilot@0"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "LLM Copilot",
+      "properties": {
+        "llmCopilot.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable LLM Copilot completions"
+        },
+        "llmCopilot.provider": {
+          "type": "string",
+          "default": "ollama",
+          "enum": [
+            "ollama",
+            "openai",
+            "anthropic",
+            "gemini",
+            "deepseek",
+            "grok",
+            "claudecode",
+            "mistral",
+            "groq",
+            "openrouter",
+            "lmstudio",
+            "azure",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Ollama (local, free) — codellama, deepseek-coder, llama3, gemma3",
+            "OpenAI — gpt-4.1, gpt-4o, gpt-4o-mini, o4-mini, o3",
+            "Anthropic — claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5-20251001",
+            "Google Gemini — gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash",
+            "DeepSeek — deepseek-chat, deepseek-coder, deepseek-reasoner (great for code)",
+            "xAI Grok — grok-3, grok-3-mini, grok-3-fast, grok-2",
+            "Claude Code (local CLI server, free, no API key — run: claude serve)",
+            "Mistral AI — mistral-large-latest, codestral-latest, mistral-small-latest",
+            "Groq (ultra-fast inference) — llama-3.3-70b-versatile, moonshotai/kimi-k2-instruct",
+            "OpenRouter (access 100+ models) — set model to any OpenRouter model ID",
+            "LM Studio (local) — any model loaded in LM Studio",
+            "Azure OpenAI — set baseUrl to your Azure endpoint, model to deployment name",
+            "Custom OpenAI-compatible endpoint"
+          ],
+          "description": "LLM provider to use for completions"
+        },
+        "llmCopilot.model": {
+          "type": "string",
+          "default": "codellama",
+          "description": "Model name.\nOllama: codellama, deepseek-coder:6.7b, llama3.2, gemma3\nOpenAI: gpt-4.1, gpt-4o, gpt-4o-mini, o4-mini\nAnthropic: claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5-20251001\nGemini: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash\nDeepSeek: deepseek-chat, deepseek-coder, deepseek-reasoner\nGrok: grok-3, grok-3-mini, grok-3-fast\nGroq: llama-3.3-70b-versatile, moonshotai/kimi-k2-instruct\nMistral: mistral-large-latest, codestral-latest\nAzure: your deployment name"
+        },
+        "llmCopilot.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the selected provider (not needed for Ollama/LM Studio)"
+        },
+        "llmCopilot.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Base URL for local providers. Ollama default: http://localhost:11434  |  Claude Code default: http://localhost:3000  |  LM Studio default: http://localhost:1234"
+        },
+        "llmCopilot.maxTokens": {
+          "type": "number",
+          "default": 256,
+          "minimum": 10,
+          "maximum": 2000,
+          "description": "Maximum tokens for inline completions"
+        },
+        "llmCopilot.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Temperature for completions (lower = more deterministic)"
+        },
+        "llmCopilot.contextLines": {
+          "type": "number",
+          "default": 50,
+          "minimum": 5,
+          "maximum": 200,
+          "description": "Number of lines of context to send before and after cursor"
+        },
+        "llmCopilot.debounceMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 100,
+          "maximum": 3000,
+          "description": "Debounce delay in milliseconds before triggering completions"
+        },
+        "llmCopilot.autoTrigger": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically trigger completions as you type"
+        },
+        "llmCopilot.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show LLM Copilot status in the status bar"
+        },
+        "llmCopilot.enabledLanguages": {
+          "type": "array",
+          "default": [],
+          "description": "Languages to enable completions for (empty = all languages)",
+          "items": {
+            "type": "string"
+          }
+        },
+        "llmCopilot.inlineChatEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Ctrl+I inline chat in the editor"
+        },
+        "llmCopilot.testFramework": {
+          "type": "string",
+          "default": "",
+          "description": "Default testing framework (e.g. jest, pytest, JUnit). Leave blank for auto-detect."
+        },
+        "llmCopilot.claudeCodeBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "Base URL for the Claude Code local server (used when provider is \"claudecode\"). Start the server with: claude serve"
+        },
+        "llmCopilot.claudeCodeApiPath": {
+          "type": "string",
+          "default": "",
+          "description": "Override the Claude Code API path (leave blank for auto-detect). Examples: \"/v1/messages\", \"/v1/chat/completions\", \"/api/v1/messages\""
+        },
+        "llmCopilot.azureApiVersion": {
+          "type": "string",
+          "default": "2024-12-01-preview",
+          "description": "Azure OpenAI API version (used when provider is 'azure'). e.g. 2024-12-01-preview"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "llmCopilotSidebar",
+          "title": "LLM Copilot",
+          "icon": "images/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "llmCopilotSidebar": [
+        {
+          "type": "webview",
+          "id": "llmCopilot.chatView",
+          "name": "AI Chat"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "package": "NODE_NO_WARNINGS=1 vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.5",
+    "typescript": "^5.0.0"
+  }
+}
