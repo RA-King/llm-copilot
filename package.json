@@ -2,7 +2,7 @@
   "name": "llm-copilot",
   "displayName": "LLM Copilot",
   "description": "AI-powered inline completions with smart scaffolding — GitHub Copilot-level features using any LLM",
-  "version": "2.0.0",
+  "version": "0.0.1",
   "publisher": "ra-king",
   "license": "MIT",
   "repository": {
