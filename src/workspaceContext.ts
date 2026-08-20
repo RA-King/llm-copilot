@@ -108,25 +108,23 @@ export async function gatherWorkspaceSignatures(
   const referencedNames = extractReferencedNames(cursorPrefix);
 
   // ── Find files ────────────────────────────────────────────────────────────
-  let files: vscode.Uri[] = [];
-  try {
-    files = await vscode.workspace.findFiles(
-      glob,
-      '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/__pycache__/**}',
-      200  // max files to consider
-    );
-  } catch { return { context: '', sources: [] }; }
+  // findFiles walks the workspace, which is far too expensive to repeat on
+  // every keystroke — the file list barely changes, so it is cached.
+  const files = await listFiles(glob);
+  if (!files.length) { return { context: '', sources: [] }; }
 
   // Prioritise files whose names relate to the referenced identifiers
   const prioritised = prioritiseFiles(files, referencedNames, currentFile);
 
+  let opened = 0;
   for (const uri of prioritised) {
     if (Date.now() > deadline) { break; }
+    if (opened >= MAX_FILES_PER_GATHER) { break; }
     if (uri.fsPath === currentFile) { continue; }
 
     try {
-      const doc = await vscode.workspace.openTextDocument(uri);
-      const fileSigs = extractSignatures(doc, patterns, referencedNames);
+      const fileSigs = await cachedSignatures(uri, patterns, referencedNames);
+      opened++;
       if (fileSigs.length > 0) {
         const relPath = vscode.workspace.asRelativePath(uri);
         signatures.push(`// from ${relPath}:\n${fileSigs.join('\n')}`);
@@ -145,6 +143,86 @@ export async function gatherWorkspaceSignatures(
     `\n// ──────────────────────────────────────────`;
 
   return { context, sources };
+}
+
+// ── Caching ──────────────────────────────────────────────────────────────────
+//
+// This module is the fallback for when no language server is installed, so it
+// runs on the completion critical path. Both of its costs — walking the
+// workspace and opening files — are cached, because neither answer changes
+// between keystrokes.
+
+/** How many files to actually open per gather, on top of the time budget. */
+const MAX_FILES_PER_GATHER = 40;
+
+const FILE_LIST_TTL_MS = 30_000;
+const fileListCache = new Map<string, { files: vscode.Uri[]; at: number }>();
+
+const SIG_CACHE_TTL_MS = 30_000;
+const SIG_CACHE_MAX = 400;
+/** Per-file extracted signatures, invalidated by the document's own version. */
+const sigCache = new Map<string, { version: number; at: number; sigs: string[] }>();
+
+async function listFiles(glob: string): Promise<vscode.Uri[]> {
+  const now = Date.now();
+  const hit = fileListCache.get(glob);
+  if (hit && now - hit.at < FILE_LIST_TTL_MS) { return hit.files; }
+
+  let files: vscode.Uri[] = [];
+  try {
+    files = await vscode.workspace.findFiles(
+      glob,
+      '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/out/**,**/target/**,**/vendor/**,**/__pycache__/**}',
+      200  // max files to consider
+    );
+  } catch { return hit?.files ?? []; }
+
+  fileListCache.set(glob, { files, at: now });
+  return files;
+}
+
+async function cachedSignatures(
+  uri: vscode.Uri,
+  patterns: RegExp[],
+  relevantNames: Set<string>
+): Promise<string[]> {
+  const key = uri.toString();
+  const now = Date.now();
+  const hit = sigCache.get(key);
+
+  // An already-open document exposes a version we can validate against; a file
+  // that is merely on disk falls back to a short TTL.
+  const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === key);
+  if (hit) {
+    if (openDoc ? openDoc.version === hit.version : now - hit.at < SIG_CACHE_TTL_MS) {
+      return filterByNames(hit.sigs, relevantNames);
+    }
+  }
+
+  const doc = openDoc ?? await vscode.workspace.openTextDocument(uri);
+  // Cache the UNFILTERED signatures so a different set of referenced names on
+  // the next keystroke is served from cache rather than re-reading the file.
+  const sigs = extractSignatures(doc, patterns, new Set());
+  if (sigCache.size >= SIG_CACHE_MAX) {
+    const oldest = sigCache.keys().next().value;
+    if (oldest) { sigCache.delete(oldest); }
+  }
+  sigCache.set(key, { version: doc.version, at: now, sigs });
+  return filterByNames(sigs, relevantNames);
+}
+
+function filterByNames(sigs: string[], relevantNames: Set<string>): string[] {
+  if (relevantNames.size === 0) { return sigs.slice(0, 20); }
+  const matched = sigs.filter(sig => [...relevantNames].some(n => sig.includes(n)));
+  // Keep a few unmatched ones for general context, as before.
+  const rest = sigs.filter(s => !matched.includes(s)).slice(0, 5);
+  return [...matched, ...rest].slice(0, 20);
+}
+
+/** Test seam / used when the workspace changes. */
+export function clearWorkspaceCaches(): void {
+  fileListCache.clear();
+  sigCache.clear();
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

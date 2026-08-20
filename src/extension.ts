@@ -560,6 +560,15 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // ─── Workspace file changes ───────────────────────────────────────────────
+  // The cross-file caches key on the workspace's file list; adding, deleting or
+  // renaming a file makes that list stale.
+  context.subscriptions.push(
+    vscode.workspace.onDidCreateFiles(() => completionProvider.clearCache()),
+    vscode.workspace.onDidDeleteFiles(() => completionProvider.clearCache()),
+    vscode.workspace.onDidRenameFiles(() => completionProvider.clearCache()),
+  );
+
   // ─── Config changes ───────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(async e => {

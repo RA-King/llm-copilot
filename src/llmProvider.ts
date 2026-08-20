@@ -12,6 +12,15 @@ export interface CompletionRequest {
   keywordHint?: string;
   /** Relevant signatures from other workspace files */
   workspaceContext?: string;
+  /** Rendered enclosing signature / bindings in scope (signatureExtractor) */
+  surroundingContext?: string;
+  /** Rendered language-server facts: resolved types, in-scope symbols, real
+   *  declarations read out of the files this code depends on (semanticContext) */
+  semanticContext?: string;
+  /** The declared or inferred return type the completion must satisfy */
+  expectedReturnType?: string;
+  /** Text on the current line before the cursor */
+  linePrefix?: string;
 }
 
 export interface ChatMessage { role: 'user' | 'assistant' | 'system'; content: string; }
@@ -471,6 +480,8 @@ export async function testConnection(): Promise<{ success: boolean; message: str
 function buildCompletionPrompt(req: CompletionRequest): string {
   const s = req.structure;
   const lang = req.language;
+
+  // ── What kind of thing belongs here ──────────────────────────────────────
   let structuralGuide = '';
 
   if (s.structureKind === 'class-body' || s.structureKind === 'impl-body') {
@@ -491,29 +502,62 @@ Declaration: ${s.containerSignature}`;
   } else if (s.structureKind === 'interface-body') {
     structuralGuide = `You are inside an interface "${s.containerName}". Suggest the next method SIGNATURE only — no body. Interface: ${s.containerSignature}`;
   } else if (s.structureKind === 'function-body') {
-    structuralGuide = `You are inside a function body (depth ${req.nestingDepth}). Suggest the next logical statement(s). Do NOT rewrite existing code.`;
+    structuralGuide = `You are inside a function body (depth ${req.nestingDepth}). Suggest the next logical statement(s) that advance this function toward its declared result. Do NOT rewrite existing code.`;
   } else if (s.structureKind === 'enum-body') {
     structuralGuide = `You are inside enum "${s.containerName}". Suggest the next logical enum case/variant.`;
   } else {
     structuralGuide = `You are at the top level of a ${lang} file. Suggest the next logical declaration.`;
   }
 
-  const workspaceSection = req.workspaceContext
-    ? `
-${req.workspaceContext}
-`
-    : '';
+  // ── Layered context, most authoritative last ─────────────────────────────
+  const sections: string[] = [];
 
-  return `You are an expert ${lang} code completion engine. Suggest ONLY new code — never rewrite existing code.
+  if (req.workspaceContext) {
+    sections.push(req.workspaceContext);
+  }
+
+  if (req.surroundingContext) {
+    sections.push(
+      `── Logical context at the cursor ──\n${req.surroundingContext}`
+    );
+  }
+
+  if (req.semanticContext) {
+    sections.push(
+      `── Facts from the ${lang} language server (authoritative — prefer these over anything inferred) ──\n` +
+      req.semanticContext
+    );
+  }
+
+  // ── Contract the completion must satisfy ─────────────────────────────────
+  const contract: string[] = [];
+  if (req.expectedReturnType) {
+    contract.push(`The enclosing function must produce \`${req.expectedReturnType}\` — any value you return or assign must have that type.`);
+  }
+  if (req.linePrefix && req.linePrefix.trim()) {
+    contract.push(`Continue from exactly this partial line — do NOT repeat it: \`${req.linePrefix}\``);
+  }
+  if (req.keywordHint) {
+    contract.push(`The user just typed the keyword \`${req.keywordHint}\`; complete that construct.`);
+  }
+
+  const contextBlock = sections.length ? `\n${sections.join('\n\n')}\n` : '';
+  const contractBlock = contract.length ? `\nRequirements:\n${contract.map(c => `- ${c}`).join('\n')}\n` : '';
+
+  return `You are an expert ${lang} code completion engine. Suggest ONLY new code that belongs at <CURSOR> — never rewrite existing code.
 
 ${structuralGuide}
-${workspaceSection}
-Rules: Output raw code ONLY. No markdown, no backticks, no explanation. Match indentation exactly.
-For constructors: full implementation with all field assignments.
-For getters/setters: complete pairs.
-For methods: full implementation, not just signature.
-Use correct type signatures from the workspace context above when referenced types appear.
-Never repeat existing code above cursor.
+${contextBlock}${contractBlock}
+Rules:
+- Output raw ${lang} code ONLY. No markdown, no backticks, no explanation, no trailing commentary.
+- Use ONLY identifiers that exist in the context above or that you declare yourself. Never invent a function, field, module or type that has not been shown to you.
+- Respect the exact parameter names, parameter order and types shown in the resolved declarations.
+- Match the surrounding indentation, brace style, quote style and naming conventions.
+- Close every brace, bracket and quote you open, and do NOT emit a closing delimiter for a block that was opened before <CURSOR>.
+- For constructors: full implementation with all field assignments.
+- For getters/setters: complete pairs.
+- For methods: full implementation, not just the signature.
+- Never repeat code that already appears above the cursor.
 
 File: ${req.filename}
 
