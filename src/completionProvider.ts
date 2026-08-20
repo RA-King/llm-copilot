@@ -4,8 +4,15 @@ import { analyseCursorContext, shouldSuggest, CursorIntent } from './contextAnal
 import { formatCompletion, detectIndentStyle, stripArtefacts } from './formatter';
 import { extractKeywordTrigger } from './keywordTrigger';
 import { guardAgainstDuplication } from './duplicationGuard';
-import { gatherWorkspaceSignatures } from './workspaceContext';
 import { getPendingDocComment, clearPendingDocComment } from './docTrigger';
+import { renderContextForPrompt, SurroundingContext } from './signatureExtractor';
+import { renderSemanticForPrompt, SemanticContext } from './semanticContext';
+import { validateStructure, validateWithInterpreter } from './snippetValidator';
+import { clearWorkspaceCaches } from './workspaceContext';
+import {
+  prepareContext, prefetchContext, invalidateDocument, clearPrefetchCache,
+  PrepareOptions,
+} from './contextPrefetch';
 
 export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemProvider {
   private cache = new Map<string, { text: string; timestamp: number }>();
@@ -144,15 +151,31 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
       ? 'completing-started'
       : intentMap[cursorCtx.intent];
 
-    // Gather cross-file signatures concurrently (700ms budget)
-    // Skip if already cancelled
     if (token.isCancellationRequested) { return null; }
-    const workspaceSigs = await Promise.race([
-      gatherWorkspaceSignatures(document.fileName, document.languageId, prefix, 700),
-      new Promise<{context:string;sources:string[]}>(resolve =>
-        token.onCancellationRequested(() => resolve({context:'',sources:[]}))
-      ),
+
+    const cancelled = <T,>(fallback: T) => new Promise<T>(resolve =>
+      token.onCancellationRequested(() => resolve(fallback)));
+
+    // ── Context ─────────────────────────────────────────────────────────────
+    // The debouncer already started this gather when it set its timer, so this
+    // usually resolves immediately. `prepareContext` recomputes the (sub-
+    // millisecond) source-level context fresh and reuses the resolved
+    // language-server work.
+    const prepared = prepareContext(document, safePos, linePrefix, prepareOptions(cfg));
+
+    const gathered = await Promise.race([
+      prepared.promise,
+      cancelled(null as Awaited<typeof prepared.promise> | null),
     ]);
+
+    if (token.isCancellationRequested || !gathered) { return null; }
+
+    const { surrounding, semantic, workspace: workspaceSigs } = gathered;
+
+    // The return type the completion has to satisfy: prefer the language
+    // server's resolution, fall back to the declared annotation.
+    const expectedReturnType =
+      resolveReturnType(semantic, surrounding) || undefined;
 
     const raw = await Promise.race([
       getCompletion({
@@ -164,6 +187,10 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
         nestingDepth: cursorCtx.nestingDepth,
         structure: cursorCtx.structure,
         workspaceContext: workspaceSigs.context || undefined,
+        surroundingContext: renderContextForPrompt(surrounding) || undefined,
+        semanticContext: renderSemanticForPrompt(semantic) || undefined,
+        expectedReturnType,
+        linePrefix: linePrefix.trim() ? linePrefix : undefined,
       }),
       new Promise<string>((_, reject) =>
         token.onCancellationRequested(() => reject(new Error('cancelled')))
@@ -188,8 +215,42 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
     const guarded = guardAgainstDuplication(formatted, fullPrefix, fullSuffix, typedOnLine);
     if (!guarded) { return null; }
 
-    this.saveToCache(cacheKey, guarded);
-    return this.makeList(guarded, safePos, document, lineText, safeChar);
+    // ── Syntax validation ─────────────────────────────────────────────────
+    // Structural check first: it is free, and it repairs the common LLM
+    // failure of closing a block that was opened before the cursor.
+    const wholePrefix = document.getText(new vscode.Range(0, 0, safeLine, safeChar));
+    const lastLine    = document.lineCount - 1;
+    const wholeSuffix = document.getText(
+      new vscode.Range(safeLine, safeChar, lastLine, document.lineAt(lastLine).text.length)
+    );
+
+    const structural = validateStructure(guarded, wholePrefix, wholeSuffix, document.languageId);
+    if (!structural.ok) {
+      console.log(`[LLM Copilot] suggestion rejected — ${structural.reason}`);
+      return null;
+    }
+    let candidate = structural.snippet;
+
+    // Then hand the merged file to the language's own parser, when the user
+    // has opted in and the toolchain is installed.
+    if (cfg.get('validateWithInterpreter', false)) {
+      const merged = wholePrefix + candidate + wholeSuffix;
+      const verdict = await Promise.race([
+        validateWithInterpreter(merged, document.languageId, {
+          timeoutMs: cfg.get('interpreterTimeoutMs', 2500),
+          cwd: vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath,
+        }).catch(() => ({ status: 'skipped' as const, message: '' })),
+        cancelled({ status: 'skipped' as const, message: '' }),
+      ]);
+      if (verdict.status === 'invalid') {
+        console.log(`[LLM Copilot] suggestion rejected by ${document.languageId} parser — ${verdict.message}`);
+        return null;
+      }
+      if (token.isCancellationRequested) { return null; }
+    }
+
+    this.saveToCache(cacheKey, candidate);
+    return this.makeList(candidate, safePos, document, lineText, safeChar);
   }
 
   /**
@@ -300,7 +361,48 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
     this.cache.set(key, { text, timestamp: Date.now() });
   }
 
-  clearCache() { this.cache.clear(); }
+  clearCache() {
+    this.cache.clear();
+    clearPrefetchCache();
+    clearWorkspaceCaches();
+  }
+}
+
+// ─── Shared configuration ─────────────────────────────────────────────────────
+
+/**
+ * Read the context-gathering knobs once. The debouncer and the provider MUST
+ * agree on these, or the prefetch and the read would use different cache keys
+ * and the prefetch would never be reused.
+ */
+export function prepareOptions(cfg: vscode.WorkspaceConfiguration): PrepareOptions {
+  return {
+    semanticEnabled:   cfg.get('semanticContext', true),
+    semanticBudgetMs:  cfg.get('semanticBudgetMs', 900),
+    maxSymbols:        cfg.get('semanticMaxSymbols', 30),
+    maxDeclarations:   cfg.get('semanticMaxDeclarations', 4),
+    workspaceBudgetMs: cfg.get('workspaceScanBudgetMs', 700),
+  };
+}
+
+// ─── Return-type resolution ───────────────────────────────────────────────────
+
+/**
+ * The type the completion has to produce. The language server's resolved
+ * signature wins when it has one; otherwise fall back to the annotation the
+ * regex extractor read off the source.
+ */
+function resolveReturnType(
+  semantic: SemanticContext,
+  surrounding: SurroundingContext
+): string {
+  const detail = semantic.enclosingDetail;
+  if (detail) {
+    // `method foo(a: string): Promise<Result>` → `Promise<Result>`
+    const arrow = detail.match(/\)\s*(?::|->)\s*([^{;]+?)\s*$/);
+    if (arrow) { return arrow[1].trim(); }
+  }
+  return surrounding.enclosing?.returnType ?? '';
 }
 
 // ─── Snippet escaping ─────────────────────────────────────────────────────────
@@ -353,7 +455,14 @@ export class CompletionDebouncer {
     if (!event.contentChanges.length) { return; }
 
     const change = event.contentChanges[0];
-    if (change.text.length > 50) { return; } // paste
+    if (change.text.length > 50) {
+      // A paste rewrites structure — anything cached for this file is stale.
+      invalidateDocument(event.document.uri);
+      return;
+    }
+    if (change.text.includes('\n') || change.range.start.line !== change.range.end.line) {
+      invalidateDocument(event.document.uri);
+    }
 
     if (editor.document.lineCount === 0) { return; }
 
@@ -372,6 +481,7 @@ export class CompletionDebouncer {
       // Shorter debounce for keywords (user likely just finished the word)
       const keywordDebounce = Math.min(cfg.get<number>('debounceMs', 600), 400);
       this.lastTriggerLine = safeLine;
+      this.warm(editor.document, pos, linePrefix, cfg);
       this.timer = setTimeout(() => this.fireTrigger(event.document), keywordDebounce);
       return;
     }
@@ -392,7 +502,32 @@ export class CompletionDebouncer {
 
     if (this.timer) { clearTimeout(this.timer); }
     const debounceMs: number = cfg.get('debounceMs', 600);
+    this.warm(editor.document, pos, linePrefix, cfg);
     this.timer = setTimeout(() => this.fireTrigger(event.document), debounceMs);
+  }
+
+  /**
+   * Start resolving the completion context now, while the debounce timer runs.
+   *
+   * This is the single biggest latency win available: the debounce is time we
+   * are deliberately spending doing nothing, and the context gather does not
+   * depend on anything that happens during it. Running them concurrently
+   * removes the gather from the critical path almost entirely.
+   *
+   * Safe to call on every keystroke — the cache key is stable while you type
+   * within a line, so repeated calls join the same in-flight request rather
+   * than starting new ones.
+   */
+  private warm(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    linePrefix: string,
+    cfg: vscode.WorkspaceConfiguration
+  ) {
+    if (!cfg.get('prefetchContext', true)) { return; }
+    const langs: string[] = cfg.get('enabledLanguages', []);
+    if (langs.length > 0 && !langs.includes(document.languageId)) { return; }
+    prefetchContext(document, position, linePrefix, prepareOptions(cfg));
   }
 
   private async fireTrigger(document: vscode.TextDocument) {

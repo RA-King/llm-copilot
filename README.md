@@ -39,6 +39,11 @@ LLM Copilot brings ghost-text autocomplete, inline chat, code actions (explain /
 ## Features
 
 - **Inline ghost-text completions** — Copilot-style suggestions as you type; `Tab` to accept, `Esc` to dismiss.
+- **Context-aware generation** — every suggestion is built from the enclosing method signature, the parameters and locals in scope, the fields of the enclosing type, and the required return type.
+- **Reads the files your code depends on** — referenced types and functions are resolved to their real declarations, and those declarations are read out of the files they live in and sent with the request.
+- **Language-server grounded** — where a language server is installed (tsserver, Pylance, rust-analyzer, gopls, jdt.ls, clangd, OmniSharp, …), the model is told exactly which identifiers are legal at the cursor and what type each one has.
+- **Syntax-validated suggestions** — candidates are checked (and repaired) before they are ever displayed, optionally by the language's own parser.
+- **Context resolved off the critical path** — all of the above happens *during* the debounce window, is shared across keystrokes, and adapts to your language server's real latency, so it costs no waiting.
 - **Smart trigger detection** — completions fire on keywords (`function`, `class`, `def`, `fn`, …) and at meaningful cursor positions, not mid-word.
 - **Duplication guard** — never suggests code that already exists in the file.
 - **Auto-formatting** — suggestions are re-indented to match your file's tab/space style and surrounding blank-line rhythm.
@@ -373,6 +378,117 @@ Just type. When you start a new line, a declaration keyword, or a fresh statemen
 - **Force a suggestion now:** `Ctrl/Cmd+Shift+Space` (**Trigger Inline Completion**)
 - Auto-triggering can be turned off with `llmCopilot.autoTrigger: false` (then use the manual shortcut).
 
+#### What the model is told
+
+A completion request is not just the surrounding lines. Before asking the model
+for anything, the extension assembles the same picture a human reader would
+build:
+
+1. **The logical context at the cursor** — the enclosing function or method with
+   its parameters *and their types*, its generics, its `throws` clause and its
+   return type; the enclosing class/struct/interface and its fields; every
+   local, loop variable and catch binding declared above the cursor; and, when
+   the return type is not annotated, the `return` statements already written in
+   the body. This is derived from the source itself, so it works for every
+   supported language with no extra tooling.
+
+2. **What the language's own analyser knows** — if a language server is
+   installed for the file, it is queried for the resolved signature of the
+   enclosing symbol, the type of the identifiers on the current line, the
+   signature of the call being written, and the full list of identifiers that
+   are *legal at that exact position*. The model is instructed to use only
+   those names, which is what stops it inventing methods that do not exist.
+
+3. **The declarations behind the names** — for the types and functions that
+   matter to this completion, the language server is asked where each one is
+   defined; those files are opened and the actual declaration is lifted out and
+   included. Instead of guessing at `OrderRepository`, the model is shown it.
+
+4. **The contract to satisfy** — the return type the completion must produce,
+   the partial line it must continue without repeating, and any problems the
+   language server is already reporting nearby.
+
+Every one of these steps is time-boxed and fails soft: no language server, a
+server that is still indexing, or a slow project degrades the suggestion
+quality but never blocks or breaks the completion. Tune the budget with
+`llmCopilot.semanticBudgetMs`, or turn the layer off with
+`llmCopilot.semanticContext: false`.
+
+#### Suggestions are checked before you see them
+
+Two gates run on every candidate:
+
+- **Structural validation (always on, free).** A delimiter-, string- and
+  comment-aware scan of the snippet *in the position it will land in*. It
+  discards suggestions that leave a string or bracket unclosed, that are prose
+  rather than code, or that would be inserted into the middle of a string
+  literal — and it **repairs** the most common LLM mistake, a trailing `}` that
+  closes the block you were already inside, rather than throwing the suggestion
+  away.
+
+- **The language's own parser (opt-in).** Set
+  `llmCopilot.validateWithInterpreter: true` and the file — with the suggestion
+  spliced in — is handed to the real front-end for that language before the
+  ghost text appears:
+
+  | Language | Checker |
+  |---|---|
+  | TypeScript / TSX | the TypeScript parser, in-process (syntax only, no type check) |
+  | JavaScript / JSX | `node --check` |
+  | Python | `ast.parse` |
+  | Ruby | `ruby -c` |
+  | PHP | `php -l` |
+  | Go | `gofmt -e` |
+  | Lua | `luac -p` |
+  | Shell | `bash -n` |
+
+  Each of these parses without executing your code and without needing your
+  dependencies resolved. If the checker is not installed, is too slow, or fails
+  to launch, the suggestion is shown as normal — a missing compiler never costs
+  you a completion. Verdicts are cached, so re-triggering at the same spot is
+  free.
+
+#### Latency
+
+Everything above is designed to stay off the critical path.
+
+The debounce window is time the extension is *deliberately* doing nothing —
+waiting to see whether you keep typing. Context resolution doesn't depend on
+anything that happens during it, so it runs inside that window rather than
+after it:
+
+```
+before   [ debounce 500ms ] → [ gather context ] → [ LLM call ] → ghost text
+after    [ debounce 500ms ]                      → [ LLM call ] → ghost text
+         [ gather context ]
+```
+
+By the time the completion provider runs, the context is normally already
+resolved and reading it costs nothing. Four further measures keep it that way:
+
+- **Keystrokes share one gather.** The cache is keyed on what is *stable* while
+  you type — the enclosing signature, the container, the line, and the
+  member-access receiver — not on the document version. Typing `c` → `co` →
+  `con` joins one in-flight request instead of starting three.
+- **The budget adapts.** `semanticBudgetMs` is a timeout, not a wait: a
+  responsive language server returns immediately regardless. The effective
+  timeout tracks your server's measured latency, so a slow project can't
+  repeatedly cost the full ceiling. A language with *no* server installed is
+  skipped outright after a few empty answers, then re-probed a minute later.
+- **The fallback is skipped when it isn't needed.** The workspace-wide regex
+  sweep exists for languages with no language server. Once one has answered, it
+  no longer runs at all — and when it does run, both the workspace file list and
+  the per-file extraction are cached between keystrokes.
+- **Validation is cheap.** Structural checking is a single linear pass:
+  ~0.03 ms on a small file, ~1.3 ms on a 10,000-line one. The optional
+  interpreter pass caches its verdicts, and on timeout shows the suggestion
+  rather than making you wait.
+
+If ghost text still feels slow, the remaining time is the model itself. Lower
+`maxTokens`, pick a faster model, or run locally with Ollama/LM Studio.
+Setting `prefetchContext: false` disables the overlap and is only useful for
+diagnosing a problem.
+
 ### 2. Inline chat — `Ctrl/Cmd+I`
 
 Put your cursor in the editor (optionally select code), press `Ctrl/Cmd+I`, and type an instruction like *"convert this to async/await"* or *"add null checks."* The result is applied inline.
@@ -493,6 +609,14 @@ All settings are under the `llmCopilot.` prefix.
 | `claudeCodeBaseUrl` | string | `http://localhost:3000` | Base URL of the Claude Code proxy. |
 | `claudeCodeApiPath` | string | `""` | Override the Claude Code API path (blank = auto-detect). |
 | `azureApiVersion` | string | `2024-12-01-preview` | Azure OpenAI API version. |
+| `semanticContext` | boolean | `true` | Query the language server for resolved types, in-scope identifiers and cross-file declarations. |
+| `semanticBudgetMs` | number | `600` | **Ceiling** on those queries (100–5000 ms). A timeout, not a wait — it adapts down to your language server's measured latency. |
+| `prefetchContext` | boolean | `true` | Resolve context *during* the debounce instead of after it. The single largest latency win. |
+| `workspaceScanBudgetMs` | number | `700` | Budget for the regex sweep over workspace files — the no-language-server fallback only (0–5000 ms). |
+| `semanticMaxSymbols` | number | `30` | How many in-scope identifiers (with types) to show the model (0–100). |
+| `semanticMaxDeclarations` | number | `4` | How many cross-file declarations to resolve and read in full (0–12). |
+| `validateWithInterpreter` | boolean | `false` | Run the language's own syntax checker over each suggestion and discard the ones it rejects. |
+| `interpreterTimeoutMs` | number | `2500` | Timeout for that checker (300–10000 ms). On timeout the suggestion is shown, not discarded. |
 
 **Example `settings.json`:**
 
@@ -505,7 +629,16 @@ All settings are under the `llmCopilot.` prefix.
   "llmCopilot.maxTokens": 256,
   "llmCopilot.temperature": 0.2,
   "llmCopilot.autoTrigger": true,
-  "llmCopilot.enabledLanguages": ["typescript", "python"]
+  "llmCopilot.enabledLanguages": ["typescript", "python"],
+
+  // Context depth
+  "llmCopilot.semanticContext": true,
+  "llmCopilot.semanticBudgetMs": 600,
+  "llmCopilot.semanticMaxDeclarations": 4,
+  "llmCopilot.prefetchContext": true,
+
+  // Let the language's own parser vet each suggestion
+  "llmCopilot.validateWithInterpreter": true
 }
 ```
 
@@ -530,6 +663,11 @@ Key modules:
 | `completionProvider.ts` | The inline (ghost-text) completion provider. |
 | `llmProvider.ts` | All provider connections + prompt builders. |
 | `contextAnalyzer.ts` / `structureAnalyzer.ts` | Understand the cursor's surroundings. |
+| `signatureExtractor.ts` | Parse the enclosing signature, scope chain and every binding in scope, straight from the source. |
+| `semanticContext.ts` | Query the installed language server for resolved types, legal identifiers and cross-file declarations. |
+| `workspaceContext.ts` | Regex-scan the workspace for related declarations (the no-language-server fallback). |
+| `contextPrefetch.ts` | Resolve context during the debounce window and share it across keystrokes. |
+| `snippetValidator.ts` | Structurally validate and repair a candidate, then optionally hand it to the language's own parser. |
 | `formatter.ts` | Re-indent and clean LLM output. |
 | `duplicationGuard.ts` | Suppress already-present code. |
 | `keywordTrigger.ts` / `docTrigger.ts` | Decide when to fire completions / doc comments. |

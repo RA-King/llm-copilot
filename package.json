@@ -346,6 +346,56 @@
           "default": "",
           "description": "Override the Claude Code API path (leave blank for auto-detect). Examples: \"/v1/messages\", \"/v1/chat/completions\", \"/api/v1/messages\""
         },
+        "llmCopilot.semanticContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the language server (tsserver, Pylance, rust-analyzer, gopls, jdt.ls, clangd, …) to resolve types, list the identifiers that are legal at the cursor, and read the declarations out of the files your code actually depends on. Falls back to source analysis when no language server is installed."
+        },
+        "llmCopilot.semanticBudgetMs": {
+          "type": "number",
+          "default": 600,
+          "minimum": 100,
+          "maximum": 5000,
+          "description": "Ceiling on the time spent querying the language server before a completion. This is a timeout, not a wait — a responsive server returns immediately. The effective budget adapts downward from here based on how fast your language server has actually been, and a language with no server installed is skipped entirely after a few empty answers."
+        },
+        "llmCopilot.prefetchContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start resolving completion context while the debounce timer runs, instead of after it. This removes the context gather from the critical path almost entirely and is the single largest latency win — turn it off only to diagnose a problem."
+        },
+        "llmCopilot.workspaceScanBudgetMs": {
+          "type": "number",
+          "default": 700,
+          "minimum": 0,
+          "maximum": 5000,
+          "description": "Budget for the regex sweep over workspace files. This runs only as the fallback for languages with no language server; results are cached between keystrokes."
+        },
+        "llmCopilot.semanticMaxSymbols": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "How many in-scope identifiers (with their types) to show the model."
+        },
+        "llmCopilot.semanticMaxDeclarations": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "maximum": 12,
+          "description": "How many cross-file declarations to resolve and read in full for each completion."
+        },
+        "llmCopilot.validateWithInterpreter": {
+          "type": "boolean",
+          "default": false,
+          "description": "Before showing ghost text, run the language's own syntax checker (node --check, python ast.parse, ruby -c, php -l, gofmt -e, tsc --noEmit, …) over the file with the suggestion spliced in, and discard suggestions it rejects. Costs a short subprocess per new suggestion; results are cached. Suggestions are always structurally validated and repaired regardless of this setting."
+        },
+        "llmCopilot.interpreterTimeoutMs": {
+          "type": "number",
+          "default": 2500,
+          "minimum": 300,
+          "maximum": 10000,
+          "description": "Timeout for the external syntax checker used by llmCopilot.validateWithInterpreter. On timeout the suggestion is shown rather than discarded."
+        },
         "llmCopilot.azureApiVersion": {
           "type": "string",
           "default": "2024-12-01-preview",
