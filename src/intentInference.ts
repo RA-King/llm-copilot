@@ -367,3 +367,22 @@ function owesReturn(ctx: SurroundingContext, body: string): boolean {
   // all guards or branch exits and the main path still has to produce a value.
   return !/\n\s{0,4}return\s+\S/.test(body) || !ctx.returnExpressions.length;
 }
+
+// ─── Suggestion shape ─────────────────────────────────────────────────────────
+
+export function decideShape(
+  linePrefix: string,
+  openConstruct: OpenConstruct | null,
+  cursorLine: number
+): SuggestionShape {
+  const trimmed = linePrefix.trim();
+  if (!trimmed) {
+    // A block header on the line directly above means its body is what's wanted.
+    return openConstruct && openConstruct.line === cursorLine - 1 ? 'block' : 'statement';
+  }
+  if (/[{:]$/.test(trimmed)) { return 'block'; }
+  if (/[=(,[+\-*/%<>!&|?]$|\b(?:return|await|new|yield|throw|typeof)$|\.\w*$/.test(trimmed)) {
+    return 'expression';
+  }
+  return 'statement';
+}
