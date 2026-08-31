@@ -24,7 +24,9 @@
  * the scope and bindings; this module only interprets them.
  */
 
-import { Binding, DocLike, PosLike, stripLiterals } from './signatureExtractor';
+import {
+  Binding, DocLike, PosLike, SurroundingContext, stripLiterals,
+} from './signatureExtractor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -343,4 +345,25 @@ function findAccumulator(
     if (before.length) { return before[before.length - 1]; }
   }
   return candidates[candidates.length - 1];
+}
+
+// ─── Return obligation ────────────────────────────────────────────────────────
+
+const VOID_TYPES = new Set(['void', 'None', 'none', 'unit', '()', 'Unit', 'undefined', 'never']);
+
+function owesReturn(ctx: SurroundingContext, body: string): boolean {
+  const e = ctx.enclosing;
+  if (!e) { return false; }
+  if (e.kind === 'constructor' || e.kind === 'setter') { return false; }
+
+  const declared = e.returnType.trim();
+  if (declared && VOID_TYPES.has(declared.replace(/^Promise<|>$/g, '').trim())) { return false; }
+  if (!declared && !ctx.returnExpressions.length) {
+    // No annotation and nothing returned yet — can't tell, and guessing here
+    // produces worse suggestions than staying quiet.
+    return false;
+  }
+  // Every return so far is indented deeper than the body itself, i.e. they are
+  // all guards or branch exits and the main path still has to produce a value.
+  return !/\n\s{0,4}return\s+\S/.test(body) || !ctx.returnExpressions.length;
 }
