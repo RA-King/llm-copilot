@@ -528,3 +528,65 @@ export function predictNextSteps(intent: IntentContext, ctx: SurroundingContext)
 
   return steps;
 }
+
+// ─── Rendering ────────────────────────────────────────────────────────────────
+
+const SHAPE_GUIDE: Record<SuggestionShape, string> = {
+  expression: 'Finish the current expression only — one line, no trailing statements.',
+  statement:  'Write the next statement, or the two or three that clearly belong with it. Do not write the rest of the function.',
+  block:      'Write the body of the block that was just opened.',
+};
+
+/**
+ * Render the inferred intent as a compact prompt section. Returns '' when
+ * nothing useful was inferred, so the caller can drop the section entirely.
+ */
+export function renderIntentForPrompt(intent: IntentContext): string {
+  const lines: string[] = [];
+
+  if (intent.goal && intent.goalKind !== 'unknown') {
+    lines.push(`The enclosing function is named for one job: ${intent.goal}.`);
+  }
+
+  if (intent.openConstruct) {
+    const oc = intent.openConstruct;
+    const detail =
+      oc.kind === 'loop' && oc.binding && oc.iterable ? ` over \`${oc.iterable}\`, item \`${oc.binding}\``
+      : oc.kind === 'catch' && oc.binding            ? ` binding \`${oc.binding}\``
+      : oc.condition                                  ? ` on \`${oc.condition}\``
+      : '';
+    lines.push(`The cursor is inside a ${oc.kind}${detail}.`);
+  }
+
+  if (intent.accumulator) {
+    const a = intent.accumulator;
+    lines.push(`\`${a.name}\` was initialised empty${a.init ? ` (${a.init})` : ''} and is being filled in.`);
+  }
+
+  if (intent.unusedParams.length) {
+    lines.push(`Parameters nothing has read yet: ${intent.unusedParams.join(', ')}.`);
+  }
+
+  const locals = intent.unusedLocals
+    .filter(b => b.source === 'local' && b.name !== intent.accumulator?.name)
+    .slice(0, 4);
+  if (locals.length) {
+    lines.push(`Declared but not yet used: ${locals.map(b => b.type ? `${b.name}: ${b.type}` : b.name).join(', ')}.`);
+  }
+
+  if (intent.guardCount > 0) {
+    lines.push(`${intent.guardCount} guard clause${intent.guardCount > 1 ? 's' : ''} already written at the top of the body.`);
+  }
+
+  if (intent.returnPending) {
+    lines.push('The declared result has not been produced yet on the main path.');
+  }
+
+  if (intent.nextSteps.length) {
+    lines.push('Most likely next: ' + intent.nextSteps.map((s, i) => `(${i + 1}) ${s}`).join('; ') + '.');
+  }
+
+  lines.push(SHAPE_GUIDE[intent.expectedShape]);
+
+  return lines.length > 1 ? lines.join('\n') : '';
+}
