@@ -24,7 +24,7 @@
  * the scope and bindings; this module only interprets them.
  */
 
-import { Binding, DocLike, stripLiterals } from './signatureExtractor';
+import { Binding, DocLike, PosLike, stripLiterals } from './signatureExtractor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -214,4 +214,95 @@ function countGuards(doc: DocLike, fromLine: number, toLine: number, lang: strin
     if (!/^[})\]]/.test(text)) { break; }
   }
   return guards;
+}
+
+// ─── The block the cursor is inside ───────────────────────────────────────────
+
+const BLOCK_OPENERS: Array<[RegExp, ConstructKind]> = [
+  [/^(?:for|foreach)\b/i,                 'loop'],
+  [/^while\b/i,                           'loop'],
+  [/^do\b/i,                              'loop'],
+  [/^loop\b/,                             'loop'],
+  [/^(?:\}\s*)?else\s+if\b|^elif\b/,      'branch'],
+  [/^(?:\}\s*)?else\b/,                   'branch'],
+  [/^if\b|^unless\b/,                     'branch'],
+  [/^try\b|^begin\b/,                     'try'],
+  [/^(?:\}\s*)?(?:catch|except|rescue)\b/,'catch'],
+  [/^(?:\}\s*)?finally\b|^ensure\b/,      'finally'],
+  [/^switch\b|^match\b|^when\b/,          'switch'],
+  [/^with\b|^using\b/,                    'with'],
+];
+
+function opensBlock(text: string, lang: string): boolean {
+  if (/[{(\[]\s*$/.test(text)) { return true; }
+  if (/:\s*$/.test(text)) { return true; }                       // python, yaml
+  if (/\b(?:do|then)\s*(?:\|[^|]*\|)?\s*$/.test(text)) { return true; }  // ruby, lua, shell
+  if (lang === 'go' || lang === 'rust') { return /\{\s*$/.test(text); }
+  return false;
+}
+
+/**
+ * Walk up from the cursor to the nearest block header that is still open at the
+ * cursor's indentation — the loop, branch or catch the next statement lands in.
+ *
+ * `stopLine` is exclusive: pass the line of the enclosing function header so the
+ * header itself is not mistaken for a block the cursor is nested inside.
+ */
+export function findOpenConstruct(
+  doc: DocLike,
+  position: PosLike,
+  cursorIndent: number,
+  stopLine: number
+): OpenConstruct | null {
+  const lang = doc.languageId;
+
+  for (let i = position.line - 1; i > stopLine; i--) {
+    const raw = safeLine(doc, i);
+    const text = stripLiterals(raw, lang).trim();
+    if (!text) { continue; }
+    if (indentWidth(raw) >= cursorIndent) { continue; }
+    if (!opensBlock(text, lang)) { return null; }
+
+    for (const [pattern, kind] of BLOCK_OPENERS) {
+      if (!pattern.test(text)) { continue; }
+      return {
+        kind, line: i, header: text,
+        binding:   loopBinding(text, kind),
+        iterable:  loopIterable(text),
+        condition: blockCondition(text, kind),
+      };
+    }
+    return { kind: 'callback', line: i, header: text, binding: '', iterable: '', condition: '' };
+  }
+  return null;
+}
+
+function loopBinding(header: string, kind: ConstructKind): string {
+  if (kind === 'catch') {
+    return header.match(/(?:catch|except|rescue)\s*\(?\s*(?:[\w.]+\s+(?:as\s+)?)?([A-Za-z_$][\w$]*)/)?.[1] ?? '';
+  }
+  if (kind !== 'loop') { return ''; }
+  return (
+    header.match(/for\s*\(?\s*(?:const|let|var|final|auto)?\s*([A-Za-z_$][\w$]*)\s+(?:of|in)\b/)?.[1] ??
+    header.match(/for\s+([A-Za-z_$][\w$]*)\s+in\b/)?.[1] ??
+    header.match(/for\s*\(\s*(?:[\w<>\[\].]+\s+)?([A-Za-z_$][\w$]*)\s*:/)?.[1] ??
+    header.match(/for\s*\(\s*(?:const|let|var|int|size_t)?\s*([A-Za-z_$][\w$]*)\s*=/)?.[1] ??
+    ''
+  );
+}
+
+function loopIterable(header: string): string {
+  return (
+    header.match(/\b(?:of|in)\s+([A-Za-z_$][\w$.]*(?:\([^)]*\))?)/)?.[1] ??
+    header.match(/:\s*([A-Za-z_$][\w$.]*)\s*\)/)?.[1] ??
+    ''
+  ).replace(/\($/, '');
+}
+
+function blockCondition(header: string, kind: ConstructKind): string {
+  if (kind !== 'branch' && kind !== 'loop' && kind !== 'switch') { return ''; }
+  const paren = header.match(/\(([^)]*)\)\s*[{:]?\s*$/)?.[1];
+  if (paren) { return paren.trim(); }
+  return header.replace(/^(?:\}\s*)?(?:else\s+if|if|elif|unless|while|switch|match)\s*/, '')
+               .replace(/[:{]\s*$/, '').trim();
 }
