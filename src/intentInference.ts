@@ -24,7 +24,7 @@
  * the scope and bindings; this module only interprets them.
  */
 
-import { Binding } from './signatureExtractor';
+import { Binding, DocLike, stripLiterals } from './signatureExtractor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -171,4 +171,47 @@ export function classifyName(name: string): { kind: GoalKind; goal: string; subj
     return { kind, goal: words.join(' '), subject: words.slice(1).join(' ') || words.join(' ') };
   }
   return { kind, goal: `${verb} ${subject}`.trim(), subject };
+}
+
+// ─── Reading the body so far ──────────────────────────────────────────────────
+
+function safeLine(doc: DocLike, line: number): string {
+  if (line < 0 || line >= doc.lineCount) { return ''; }
+  try { return doc.lineAt(line).text; } catch { return ''; }
+}
+
+function indentWidth(text: string): number {
+  const m = text.match(/^[ \t]*/);
+  return m ? m[0].replace(/\t/g, '    ').length : 0;
+}
+
+/** The body text between the enclosing header and the cursor, literals blanked. */
+function bodyText(doc: DocLike, fromLine: number, toLine: number, lang: string): string {
+  const parts: string[] = [];
+  for (let i = Math.max(0, fromLine); i <= Math.min(toLine, doc.lineCount - 1); i++) {
+    parts.push(stripLiterals(safeLine(doc, i), lang));
+  }
+  return parts.join('\n');
+}
+
+function referenceCount(body: string, name: string): number {
+  if (!name) { return 0; }
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return (body.match(new RegExp(`\\b${escaped}\\b`, 'g')) ?? []).length;
+}
+
+/** `if (…) return` / `throw` written before any real work — the guard chain. */
+function countGuards(doc: DocLike, fromLine: number, toLine: number, lang: string): number {
+  let guards = 0;
+  for (let i = fromLine; i <= toLine && i < doc.lineCount; i++) {
+    const text = stripLiterals(safeLine(doc, i), lang).trim();
+    if (!text) { continue; }
+    if (/^(if|unless)\b.*\b(return|throw|raise|panic!?|continue)\b/.test(text)) { guards++; continue; }
+    if (/^(if|unless)\b/.test(text) && /^\s*(return|throw|raise)\b/.test(stripLiterals(safeLine(doc, i + 1), lang))) {
+      guards++; continue;
+    }
+    // The first statement that is not a guard ends the chain.
+    if (!/^[})\]]/.test(text)) { break; }
+  }
+  return guards;
 }
