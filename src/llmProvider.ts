@@ -17,10 +17,15 @@ export interface CompletionRequest {
   /** Rendered language-server facts: resolved types, in-scope symbols, real
    *  declarations read out of the files this code depends on (semanticContext) */
   semanticContext?: string;
+  /** Rendered reading of what the code so far is working towards (intentInference) */
+  intentContext?: string;
   /** The declared or inferred return type the completion must satisfy */
   expectedReturnType?: string;
   /** Text on the current line before the cursor */
   linePrefix?: string;
+  /** Ceiling on the reply length for this cursor, when it should be tighter
+   *  than the configured maximum (finishing an expression, say). */
+  tokenBudget?: number;
 }
 
 export interface ChatMessage { role: 'user' | 'assistant' | 'system'; content: string; }
@@ -407,6 +412,7 @@ export async function listClaudeCodeModels(baseUrl: string): Promise<string[]> {
 
 export async function getCompletion(req: CompletionRequest): Promise<string> {
   const cfg = getConfig();
+  if (req.tokenBudget) { cfg.maxTokens = Math.min(cfg.maxTokens, req.tokenBudget); }
   const prompt = buildCompletionPrompt(req);
   if (cfg.provider === 'ollama') return ollamaComplete(prompt, cfg);
   if (cfg.provider === 'anthropic') return anthropicChat([{ role: 'user', content: prompt }], cfg);
@@ -529,6 +535,12 @@ Declaration: ${s.containerSignature}`;
     );
   }
 
+  if (req.intentContext) {
+    sections.push(
+      `── What the code so far is working towards ──\n${req.intentContext}`
+    );
+  }
+
   // ── Contract the completion must satisfy ─────────────────────────────────
   const contract: string[] = [];
   if (req.expectedReturnType) {
@@ -558,6 +570,8 @@ Rules:
 - For getters/setters: complete pairs.
 - For methods: full implementation, not just the signature.
 - Never repeat code that already appears above the cursor.
+- Follow the reasoning under "What the code so far is working towards": continue the author's line of thought instead of starting a different one.
+- Suggest only as much code as that section asks for. Stopping early is better than running past what the author was about to write.
 
 File: ${req.filename}
 
