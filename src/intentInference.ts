@@ -306,3 +306,41 @@ function blockCondition(header: string, kind: ConstructKind): string {
   return header.replace(/^(?:\}\s*)?(?:else\s+if|if|elif|unless|while|switch|match)\s*/, '')
                .replace(/[:{]\s*$/, '').trim();
 }
+
+// ─── Accumulators ─────────────────────────────────────────────────────────────
+
+const EMPTY_INIT = /^(?:\[\]|\{\}|0|0\.0|''|""|``|new\s+\w+(?:<[^>]*>)?\(\s*\)|make\(|list\(\)|dict\(\)|set\(\)|\w+::new\(\))/;
+
+/**
+ * The right-hand side of a binding's declaration, read off the source line.
+ * `Binding.init` only carries one for declarations with no type annotation, and
+ * `const names: string[] = []` is exactly the case that matters here.
+ */
+function initialiserOf(doc: DocLike, binding: Binding): string {
+  if (binding.init) { return binding.init.trim(); }
+  const line = stripLiterals(safeLine(doc, binding.line), doc.languageId);
+  const escaped = binding.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rhs = line.match(new RegExp(`\\b${escaped}\\b[^=]*=\\s*(.+?);?\\s*$`));
+  return rhs ? rhs[1].trim() : '';
+}
+
+/**
+ * A local initialised to an empty collection, zero or an empty string is being
+ * filled in — when the cursor is inside a loop that follows it, the statement
+ * being typed is almost certainly the one that writes to it.
+ */
+function findAccumulator(
+  doc: DocLike,
+  bindings: Binding[],
+  openConstruct: OpenConstruct | null
+): Binding | null {
+  const candidates = bindings.filter(b =>
+    (b.source === 'local' || b.source === 'field') &&
+    EMPTY_INIT.test(initialiserOf(doc, b)));
+  if (!candidates.length) { return null; }
+  if (openConstruct && openConstruct.kind === 'loop') {
+    const before = candidates.filter(b => b.line < openConstruct.line);
+    if (before.length) { return before[before.length - 1]; }
+  }
+  return candidates[candidates.length - 1];
+}
