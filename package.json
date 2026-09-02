@@ -346,6 +346,11 @@
           "default": "",
           "description": "Override the Claude Code API path (leave blank for auto-detect). Examples: \"/v1/messages\", \"/v1/chat/completions\", \"/api/v1/messages\""
         },
+        "llmCopilot.intentInference": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read what the code so far is working towards — the verb in the enclosing function's name, parameters and locals nothing has used yet, the loop or catch the cursor sits in, an unpaid return obligation — and tell the model what the next statement is most likely doing. Turn off to send raw context only."
+        },
         "llmCopilot.semanticContext": {
           "type": "boolean",
           "default": true,

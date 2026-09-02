@@ -404,7 +404,37 @@ build:
    defined; those files are opened and the actual declaration is lifted out and
    included. Instead of guessing at `OrderRepository`, the model is shown it.
 
-4. **The contract to satisfy** — the return type the completion must produce,
+4. **What the code so far is working towards** — the piece that makes a
+   suggestion feel like it followed your thought rather than pattern-matched
+   your file. The verb in the enclosing function's name is read as a job
+   (`fetchUserOrders` retrieves and returns; `validateEmail` checks and
+   rejects; `collectActiveNames` accumulates into something and returns it).
+   Against that reading it works out how far the body has got: which
+   parameters nothing has referenced yet, which locals were declared and never
+   read, whether a local was initialised to `[]`/`0`/`new ArrayList<>()` before
+   the loop the cursor now sits in, how many guard clauses are already written,
+   and whether the declared return type has been satisfied on the main path.
+   From those facts it states, in one line, what the next statement most likely
+   does — "add `user` to `result`, or skip it when it does not qualify",
+   "return early, passing the error on to the caller", "guard `email` in the
+   same style as the checks above" — and the model is told to continue that
+   line of thought instead of starting a different one.
+
+   The same reading decides *how much* to write. Mid-expression you get one
+   line and a tight token budget; on an empty line inside a body, a statement
+   or two; on the line after an opening brace, the block. Turn it off with
+   `llmCopilot.intentInference: false`.
+
+   The language-specific shapes this depends on — how a loop names what it
+   iterates, how a local is declared, what counts as an empty initialiser, which
+   types mean "returns nothing" — live in one table in `languageProfiles.ts`,
+   covering TypeScript, JavaScript, Python, Java, Kotlin, Scala, Groovy, C#,
+   C, C++, Rust, Go, Ruby, PHP, Swift and Dart. So `for _, user := range users`,
+   `foreach ($users as $user)`, `users.each do |user|`, `for (user <- users)`
+   and `for (const auto& user : users)` are all read as the same thing: a loop
+   over `users` binding `user`.
+
+5. **The contract to satisfy** — the return type the completion must produce,
    the partial line it must continue without repeating, and any problems the
    language server is already reporting nearby.
 
@@ -609,6 +639,7 @@ All settings are under the `llmCopilot.` prefix.
 | `claudeCodeBaseUrl` | string | `http://localhost:3000` | Base URL of the Claude Code proxy. |
 | `claudeCodeApiPath` | string | `""` | Override the Claude Code API path (blank = auto-detect). |
 | `azureApiVersion` | string | `2024-12-01-preview` | Azure OpenAI API version. |
+| `intentInference` | boolean | `true` | Read what the code so far is working towards — the job in the function's name, unused parameters and locals, the block the cursor is in, an unsatisfied return — and tell the model what the next statement most likely does. |
 | `semanticContext` | boolean | `true` | Query the language server for resolved types, in-scope identifiers and cross-file declarations. |
 | `semanticBudgetMs` | number | `600` | **Ceiling** on those queries (100–5000 ms). A timeout, not a wait — it adapts down to your language server's measured latency. |
 | `prefetchContext` | boolean | `true` | Resolve context *during* the debounce instead of after it. The single largest latency win. |
@@ -632,6 +663,7 @@ All settings are under the `llmCopilot.` prefix.
   "llmCopilot.enabledLanguages": ["typescript", "python"],
 
   // Context depth
+  "llmCopilot.intentInference": true,
   "llmCopilot.semanticContext": true,
   "llmCopilot.semanticBudgetMs": 600,
   "llmCopilot.semanticMaxDeclarations": 4,
@@ -665,6 +697,8 @@ Key modules:
 | `contextAnalyzer.ts` / `structureAnalyzer.ts` | Understand the cursor's surroundings. |
 | `signatureExtractor.ts` | Parse the enclosing signature, scope chain and every binding in scope, straight from the source. |
 | `semanticContext.ts` | Query the installed language server for resolved types, legal identifiers and cross-file declarations. |
+| `intentInference.ts` | Read the function's name, its unconsumed parameters, its dangling locals and the block the cursor is in, and predict what the next statement is doing. |
+| `languageProfiles.ts` | One table of the per-language shapes: loop forms, local declarations, empty initialisers, void types, comment markers, block style. |
 | `workspaceContext.ts` | Regex-scan the workspace for related declarations (the no-language-server fallback). |
 | `contextPrefetch.ts` | Resolve context during the debounce window and share it across keystrokes. |
 | `snippetValidator.ts` | Structurally validate and repair a candidate, then optionally hand it to the language's own parser. |

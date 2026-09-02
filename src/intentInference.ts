@@ -24,7 +24,12 @@
  * the scope and bindings; this module only interprets them.
  */
 
-import { Binding, DocLike, stripLiterals } from './signatureExtractor';
+import {
+  Binding, DocLike, PosLike, SurroundingContext, stripLiterals,
+} from './signatureExtractor';
+import {
+  blockStyleFor, isControlLine, isEmptyInitialiser, isVoidType, matchLoop,
+} from './languageProfiles';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -214,4 +219,368 @@ function countGuards(doc: DocLike, fromLine: number, toLine: number, lang: strin
     if (!/^[})\]]/.test(text)) { break; }
   }
   return guards;
+}
+
+// ─── The block the cursor is inside ───────────────────────────────────────────
+
+const BLOCK_OPENERS: Array<[RegExp, ConstructKind]> = [
+  [/^(?:for|foreach)\b/i,                 'loop'],
+  [/^while\b/i,                           'loop'],
+  [/^do\b/i,                              'loop'],
+  [/^loop\b/,                             'loop'],
+  [/^(?:\}\s*)?else\s+if\b|^elif\b/,      'branch'],
+  [/^(?:\}\s*)?else\b/,                   'branch'],
+  [/^if\b|^unless\b/,                     'branch'],
+  [/^try\b|^begin\b/,                     'try'],
+  [/^(?:\}\s*)?(?:catch|except|rescue)\b/,'catch'],
+  [/^(?:\}\s*)?finally\b|^ensure\b/,      'finally'],
+  [/^switch\b|^match\b|^when\b/,          'switch'],
+  [/^with\b|^using\b/,                    'with'],
+];
+
+function opensBlock(text: string, lang: string): boolean {
+  const style = blockStyleFor(lang);
+  if (/\b(?:do|then)\s*(?:\|[^|]*\|)?\s*$/.test(text)) { return true; }  // ruby, lua, shell
+  if (style === 'indent') { return /:\s*$/.test(text); }
+  if (style === 'end') { return /\b(?:do|then|begin)\b\s*$/.test(text) || /^(?:if|unless|while|until|for|case|begin|def)\b/.test(text); }
+  return /[{(\[]\s*$/.test(text) || /:\s*$/.test(text);
+}
+
+/**
+ * Walk up from the cursor to the nearest block header that is still open at the
+ * cursor's indentation — the loop, branch or catch the next statement lands in.
+ *
+ * `stopLine` is exclusive: pass the line of the enclosing function header so the
+ * header itself is not mistaken for a block the cursor is nested inside.
+ */
+export function findOpenConstruct(
+  doc: DocLike,
+  position: PosLike,
+  cursorIndent: number,
+  stopLine: number
+): OpenConstruct | null {
+  const lang = doc.languageId;
+
+  for (let i = position.line - 1; i > stopLine; i--) {
+    const raw = safeLine(doc, i);
+    const text = stripLiterals(raw, lang).trim();
+    if (!text) { continue; }
+    if (indentWidth(raw) >= cursorIndent) { continue; }
+    if (!opensBlock(text, lang)) { return null; }
+
+    // An iteration written as a method call with a block (`users.each do |u|`,
+    // `items.forEach(item => …)`) is a loop by every meaning that matters here.
+    if (!isControlLine(text) && matchLoop(text)) {
+      const loop = matchLoop(text)!;
+      return {
+        kind: 'loop', line: i, header: text,
+        binding: loop.binding, iterable: loop.iterable, condition: '',
+      };
+    }
+
+    for (const [pattern, kind] of BLOCK_OPENERS) {
+      if (!pattern.test(text)) { continue; }
+      return {
+        kind, line: i, header: text,
+        binding:   loopBinding(text, kind),
+        iterable:  loopIterable(text),
+        condition: blockCondition(text, kind),
+      };
+    }
+    return { kind: 'callback', line: i, header: text, binding: '', iterable: '', condition: '' };
+  }
+  return null;
+}
+
+function loopBinding(header: string, kind: ConstructKind): string {
+  if (kind === 'catch') {
+    return header.match(/(?:catch|except|rescue)\s*\(?\s*(?:[\w.]+\s+(?:as\s+)?)?([A-Za-z_$][\w$]*)/)?.[1] ?? '';
+  }
+  if (kind !== 'loop') { return ''; }
+  return matchLoop(header)?.binding ?? '';
+}
+
+function loopIterable(header: string): string {
+  return matchLoop(header)?.iterable ?? '';
+}
+
+function blockCondition(header: string, kind: ConstructKind): string {
+  if (kind !== 'branch' && kind !== 'loop' && kind !== 'switch') { return ''; }
+  const paren = header.match(/\(([^)]*)\)\s*[{:]?\s*$/)?.[1];
+  if (paren) { return paren.trim(); }
+  return header.replace(/^(?:\}\s*)?(?:else\s+if|if|elif|unless|while|switch|match)\s*/, '')
+               .replace(/[:{]\s*$/, '').trim();
+}
+
+// ─── Accumulators ─────────────────────────────────────────────────────────────
+
+/**
+ * The right-hand side of a binding's declaration, read off the source line.
+ * `Binding.init` only carries one for declarations with no type annotation, and
+ * `const names: string[] = []` is exactly the case that matters here.
+ */
+function initialiserOf(doc: DocLike, binding: Binding): string {
+  if (binding.init) { return binding.init.trim(); }
+  const line = stripLiterals(safeLine(doc, binding.line), doc.languageId);
+  const escaped = binding.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rhs = line.match(new RegExp(`\\b${escaped}\\b[^=]*=\\s*(.+?);?\\s*$`));
+  return rhs ? rhs[1].trim() : '';
+}
+
+function findAccumulator(
+  doc: DocLike,
+  bindings: Binding[],
+  openConstruct: OpenConstruct | null
+): Binding | null {
+  const candidates = bindings.filter(b =>
+    (b.source === 'local' || b.source === 'field') &&
+    isEmptyInitialiser(initialiserOf(doc, b), b.type));
+  if (!candidates.length) { return null; }
+  if (openConstruct && openConstruct.kind === 'loop') {
+    const before = candidates.filter(b => b.line < openConstruct.line);
+    if (before.length) { return before[before.length - 1]; }
+  }
+  return candidates[candidates.length - 1];
+}
+
+// ─── Return obligation ────────────────────────────────────────────────────────
+
+function owesReturn(ctx: SurroundingContext, body: string): boolean {
+  const e = ctx.enclosing;
+  if (!e) { return false; }
+  if (e.kind === 'constructor' || e.kind === 'setter') { return false; }
+
+  const declared = e.returnType.trim();
+  if (declared && isVoidType(declared)) { return false; }
+  if (!declared && !ctx.returnExpressions.length) {
+    // No annotation and nothing returned yet — can't tell, and guessing here
+    // produces worse suggestions than staying quiet.
+    return false;
+  }
+  // Every return so far is indented deeper than the body itself, i.e. they are
+  // all guards or branch exits and the main path still has to produce a value.
+  return !/\n\s{0,4}return\s+\S/.test(body) || !ctx.returnExpressions.length;
+}
+
+// ─── Suggestion shape ─────────────────────────────────────────────────────────
+
+export function decideShape(
+  linePrefix: string,
+  openConstruct: OpenConstruct | null,
+  cursorLine: number
+): SuggestionShape {
+  const trimmed = linePrefix.trim();
+  if (!trimmed) {
+    // A block header on the line directly above means its body is what's wanted.
+    return openConstruct && openConstruct.line === cursorLine - 1 ? 'block' : 'statement';
+  }
+  if (/[{:]$/.test(trimmed)) { return 'block'; }
+  if (/[=(,[+\-*/%<>!&|?]$|\b(?:return|await|new|yield|throw|typeof)$|\.\w*$/.test(trimmed)) {
+    return 'expression';
+  }
+  return 'statement';
+}
+
+// ─── Public entry point ───────────────────────────────────────────────────────
+
+export function inferIntent(
+  doc: DocLike,
+  position: PosLike,
+  ctx: SurroundingContext,
+  linePrefix: string
+): IntentContext {
+  const lang = doc.languageId;
+  const e = ctx.enclosing;
+  const headerLine = e ? e.line : Math.max(0, position.line - 40);
+  const body = bodyText(doc, headerLine + 1, position.line, lang);
+
+  const named = e ? classifyName(e.name) : { kind: 'unknown' as GoalKind, goal: '', subject: '' };
+
+  const unusedParams = e
+    ? e.params.filter(p => p.name && referenceCount(body, p.name) === 0).map(p => p.name)
+    : [];
+
+  const unusedLocals = ctx.bindings.filter(b =>
+    (b.source === 'local' || b.source === 'loop' || b.source === 'catch') &&
+    b.line > headerLine &&
+    referenceCount(bodyText(doc, b.line + 1, position.line, lang), b.name) === 0);
+
+  const cursorIndent = indentWidth(linePrefix) || indentWidth(safeLine(doc, position.line));
+  const openConstruct = findOpenConstruct(doc, position, cursorIndent, e ? e.line : -1);
+  const accumulator = findAccumulator(doc, ctx.bindings, openConstruct);
+  const guardCount = e ? countGuards(doc, headerLine + 1, position.line, lang) : 0;
+  const returnPending = owesReturn(ctx, body);
+
+  const intent: IntentContext = {
+    goal: named.goal,
+    goalKind: named.kind,
+    subject: named.subject,
+    unusedParams,
+    unusedLocals,
+    accumulator,
+    openConstruct,
+    guardCount,
+    returnPending,
+    expectedShape: decideShape(linePrefix, openConstruct, position.line),
+    nextSteps: [],
+  };
+  intent.nextSteps = predictNextSteps(intent, ctx);
+  return intent;
+}
+
+// ─── Next-step prediction ─────────────────────────────────────────────────────
+
+/**
+ * Rank plain-English hypotheses for the statement being typed. These are
+ * offered to the model as guidance, not as a contract — the rules below fire on
+ * strong local evidence and stay silent when there is none.
+ */
+export function predictNextSteps(intent: IntentContext, ctx: SurroundingContext): string[] {
+  const steps: string[] = [];
+  const oc = intent.openConstruct;
+  const push = (s: string) => { if (s && !steps.includes(s) && steps.length < 3) { steps.push(s); } };
+
+  // Inside a loop, with something being filled in before it.
+  if (oc?.kind === 'loop' && intent.accumulator) {
+    const item = oc.binding || 'the current element';
+    push(`add ${item} to \`${intent.accumulator.name}\`, or skip it when it does not qualify`);
+  }
+  if (oc?.kind === 'loop' && !intent.accumulator && oc.binding) {
+    push(`do the per-item work on \`${oc.binding}\``);
+  }
+
+  // An error check is an early return in every language that has one.
+  if (oc?.kind === 'branch' && /\b(?:err|error|e)\b\s*(?:!=\s*nil|!==?\s*(?:null|undefined)|\.is_?err|\)|$)|^!\s*ok\b/.test(oc.condition)) {
+    push('return early, passing the error on to the caller');
+  }
+
+  // A catch that has not touched its error yet.
+  if (oc?.kind === 'catch') {
+    const err = oc.binding || 'the error';
+    push(`handle \`${err}\` — log it, wrap it, or rethrow`);
+  }
+  if (oc?.kind === 'try') {
+    push('perform the operation that can fail and keep its result');
+  }
+
+  // A binding declared and not yet read is the most immediate loose end.
+  const dangling = intent.unusedLocals.find(b =>
+    b.source === 'local' && b.name !== intent.accumulator?.name);
+  if (dangling) {
+    push(`use \`${dangling.name}\`${dangling.type ? ` (${dangling.type})` : ''} — it was just declared and nothing reads it yet`);
+  }
+
+  // Guard chains: keep checking, or start the real work.
+  if (intent.guardCount > 0 && intent.unusedParams.length) {
+    push(`guard \`${intent.unusedParams[0]}\` in the same style as the checks above`);
+  } else if (intent.goalKind === 'validate' && intent.unusedParams.length) {
+    push(`check \`${intent.unusedParams[0]}\` and reject it when invalid`);
+  }
+
+  // Verb-led expectations for a body that has not started.
+  if (!oc) {
+    switch (intent.goalKind) {
+      case 'fetch':
+        push(`${ctx.enclosing?.isAsync ? 'await the call that retrieves' : 'retrieve'} ${intent.subject || 'the data'}, then return it`);
+        break;
+      case 'create':
+        push(`construct ${intent.subject || 'the value'} and return it`);
+        break;
+      case 'transform':
+        push(`convert the input into ${intent.subject || 'the output shape'} and return it`);
+        break;
+      case 'compute':
+        push(`derive ${intent.subject || 'the value'} from the parameters and return it`);
+        break;
+      case 'predicate':
+        push('return the boolean condition this function is named for');
+        break;
+      case 'mutate':
+        push(`apply the change to ${intent.subject || 'the target'}`);
+        break;
+      case 'test':
+        push('arrange the fixture, call the unit under test, then assert on the result');
+        break;
+    }
+  }
+
+  // The function still owes its declared result — but only offer that as the
+  // next statement when the cursor is on the main path and nothing more
+  // specific has already been said.
+  if (intent.returnPending && (!oc || !steps.length)) {
+    const ready = intent.unusedLocals.find(b =>
+      b.source === 'local' && b.name !== intent.accumulator?.name);
+    push(ready
+      ? `return \`${ready.name}\``
+      : 'return the value this function is declared to produce');
+  }
+
+  // Unconsumed parameters are work not yet done.
+  if (intent.unusedParams.length && !steps.length) {
+    push(`use the parameters that nothing has read yet: ${intent.unusedParams.join(', ')}`);
+  }
+
+  return steps;
+}
+
+// ─── Rendering ────────────────────────────────────────────────────────────────
+
+const SHAPE_GUIDE: Record<SuggestionShape, string> = {
+  expression: 'Finish the current expression only — one line, no trailing statements.',
+  statement:  'Write the next statement, or the two or three that clearly belong with it. Do not write the rest of the function.',
+  block:      'Write the body of the block that was just opened.',
+};
+
+/**
+ * Render the inferred intent as a compact prompt section. Returns '' when
+ * nothing useful was inferred, so the caller can drop the section entirely.
+ */
+export function renderIntentForPrompt(intent: IntentContext): string {
+  const lines: string[] = [];
+
+  if (intent.goal && intent.goalKind !== 'unknown') {
+    lines.push(`The enclosing function is named for one job: ${intent.goal}.`);
+  }
+
+  if (intent.openConstruct) {
+    const oc = intent.openConstruct;
+    const detail =
+      oc.kind === 'loop' && oc.binding && oc.iterable ? ` over \`${oc.iterable}\`, item \`${oc.binding}\``
+      : oc.kind === 'catch' && oc.binding            ? ` binding \`${oc.binding}\``
+      : oc.condition                                  ? ` on \`${oc.condition}\``
+      : '';
+    lines.push(`The cursor is inside a ${oc.kind}${detail}.`);
+  }
+
+  if (intent.accumulator) {
+    const a = intent.accumulator;
+    lines.push(`\`${a.name}\` was initialised empty${a.init ? ` (${a.init})` : ''} and is being filled in.`);
+  }
+
+  if (intent.unusedParams.length) {
+    lines.push(`Parameters nothing has read yet: ${intent.unusedParams.join(', ')}.`);
+  }
+
+  const locals = intent.unusedLocals
+    .filter(b => b.source === 'local' && b.name !== intent.accumulator?.name)
+    .slice(0, 4);
+  if (locals.length) {
+    lines.push(`Declared but not yet used: ${locals.map(b => b.type ? `${b.name}: ${b.type}` : b.name).join(', ')}.`);
+  }
+
+  if (intent.guardCount > 0) {
+    lines.push(`${intent.guardCount} guard clause${intent.guardCount > 1 ? 's' : ''} already written at the top of the body.`);
+  }
+
+  if (intent.returnPending) {
+    lines.push('The declared result has not been produced yet on the main path.');
+  }
+
+  if (intent.nextSteps.length) {
+    lines.push('Most likely next: ' + intent.nextSteps.map((s, i) => `(${i + 1}) ${s}`).join('; ') + '.');
+  }
+
+  lines.push(SHAPE_GUIDE[intent.expectedShape]);
+
+  return lines.length > 1 ? lines.join('\n') : '';
 }

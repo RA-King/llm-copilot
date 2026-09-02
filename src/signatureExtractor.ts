@@ -17,6 +17,8 @@
  * one is not.
  */
 
+import { isControlLine, matchLocal } from './languageProfiles';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface ParamInfo {
@@ -228,6 +230,11 @@ export function matchBracket(text: string, openIdx: number): number {
 /** Does this (literal-stripped, trimmed) line start a function-like scope? */
 function functionHeaderKind(trimmed: string, lang: string): ScopeKind | null {
   if (!trimmed) { return null; }
+
+  // `foreach ($users as $user) {` and `} catch (IOException e) {` are shaped
+  // exactly like a call followed by a block. Without this every scope scan
+  // downstream reports a function named `foreach`.
+  if (isControlLine(trimmed)) { return null; }
 
   switch (lang) {
     case 'python':
@@ -526,6 +533,20 @@ export function parseParams(src: string, lang: string): ParamInfo[] {
   const colonStyle = !PREFIX_RETURN_LANGS.has(lang);
 
   return parts.map(part => {
+    // Sigil languages name the parameter with the sigil, and may put a type in
+    // front of it: `array $users`, `?string $name = null`.
+    const sigil = part.match(/(\$\w+)/);
+    if (sigil) {
+      const type = part.slice(0, part.indexOf(sigil[1])).trim().replace(/^\?/, '');
+      const def  = part.match(/=\s*(.+)$/);
+      return {
+        name: sigil[1],
+        type: /^[\w\\|]+$/.test(type) ? type : '',
+        optional: !!def,
+        defaultValue: def ? def[1].trim() : undefined,
+        rest: /\.\.\./.test(part),
+      };
+    }
     // Rust receivers, Python/Ruby self
     if (/^&?\s*(mut\s+)?self$/.test(part) || part === 'cls' || part === 'this') {
       return { name: part.replace(/^&\s*/, '').replace(/^mut\s+/, ''), type: 'Self', optional: false, rest: false };
@@ -776,13 +797,18 @@ const LOCAL_DECL_PATTERNS: DeclPattern[] = [
   { re: /\b(?:const|let|var|val)\s+(\w+)\s*=\s*new\s+([\w.]+(?:<[^>]*>)?)\s*\(/g, nameIdx: 1, typeIdx: 2 },
   // `const x = await foo(…)` / `const x = foo(…)` — an initialiser, NOT a type
   { re: /\b(?:const|let|var|val)\s+(\w+)\s*=\s*((?:await\s+)?[\w.$]+\s*\()/g, nameIdx: 1, initIdx: 2 },
-  // Any other initialised binding
-  { re: /\b(?:const|let|var|val)\s+(\w+)\s*=/g, nameIdx: 1 },
-  // Rust: `let mut x: T = …`
+  // Any other initialised binding — the initialiser is worth keeping even when
+  // the language states no type, since it is what identifies an accumulator.
+  { re: /\b(?:const|let|var|val)\s+(\w+)\s*=\s*([^;\n]+)/g, nameIdx: 1, initIdx: 2 },
+  // Rust: `let mut x: T = …` and the far more common unannotated `let mut x = …`
   { re: /\blet\s+(?:mut\s+)?(\w+)\s*:\s*([\w<>\[\]&':, ]+?)\s*[=;]/g, nameIdx: 1, typeIdx: 2 },
+  { re: /\blet\s+mut\s+(\w+)\s*=\s*([^;\n]+)/g, nameIdx: 1, initIdx: 2 },
   // Go: `x := T{…}` / `x := new(T)` name a real type
   { re: /^\s*(\w+)\s*:=\s*(?:new\((([\w.]+))\)|&?([\w.]+)\{)/gm, nameIdx: 1, typeIdx: 2 },
   { re: /^\s*(\w+)\s*:=\s*(.{0,40}?)\s*$/gm, nameIdx: 1, initIdx: 2 },
+  // C++ / namespaced types, with or without an initialiser:
+  //   `std::vector<std::string> names;`  `absl::flat_hash_map<K,V> m = {};`
+  { re: /^\s*(?:const\s+)?((?:[a-z_]\w*::)+[\w<>:,\s]*[\w>])\s*[*&]?\s+(\w+)\s*[=;]/gm, nameIdx: 2, typeIdx: 1 },
   // Java/C#/C/C++: `Type name = …` (capitalised or primitive type only)
   { re: /^\s*(?:final\s+)?((?:[A-Z][\w.]*|int|long|short|byte|char|float|double|bool|boolean|string|size_t|unsigned)(?:<[^>;=]*>)?(?:\[\s*\])?)\s+(\w+)\s*[=;]/gm, nameIdx: 2, typeIdx: 1 },
 ];
@@ -826,6 +852,10 @@ export function collectBindings(
   const bodyStart = enclosing ? enclosing.line + 1 : Math.max(0, position.line - 60);
   const bodyText = readRange(doc, bodyStart, position.line, lang);
 
+  /** The document line a match inside `bodyText` actually sits on. */
+  const lineOfMatch = (index: number) =>
+    bodyStart + (bodyText.slice(0, index).match(/\n/g)?.length ?? 0);
+
   for (const { re, nameIdx, typeIdx, initIdx } of LOCAL_DECL_PATTERNS) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -838,18 +868,27 @@ export function collectBindings(
         type,
         init: type ? undefined : (init || undefined),
         source: 'local',
-        line: bodyStart,
+        line: lineOfMatch(m.index),
       });
     }
   }
 
-  // Python locals: `x = ...` / `x: T = ...` / `with open() as f:`
-  if (lang === 'python') {
-    for (const m of bodyText.matchAll(/^\s*(\w+)\s*(?::\s*([\w\[\]|., ]+))?\s*=[^=]/gm)) {
-      push({ name: m[1], type: (m[2] ?? '').trim(), source: 'local', line: bodyStart });
+  // Languages that declare a local by assigning to a bare name. Restricted to
+  // those that have no declaration keyword at all, so a reassignment in a
+  // C-family language is never mistaken for a declaration.
+  if (lang === 'python' || lang === 'ruby' || lang === 'php' || lang === 'perl'
+      || lang === 'r' || lang === 'elixir' || lang === 'lua') {
+    for (const m of bodyText.matchAll(/^[ \t]*(\$?\w+)\s*(?::\s*([\w\[\]|., ]+))?\s*=(?!=)\s*([^\n]*)/gm)) {
+      push({
+        name: m[1],
+        type: (m[2] ?? '').trim(),
+        init: m[2] ? undefined : (m[3] ?? '').trim() || undefined,
+        source: 'local',
+        line: lineOfMatch(m.index),
+      });
     }
     for (const m of bodyText.matchAll(/\bwith\s+.*?\s+as\s+(\w+)/g)) {
-      push({ name: m[1], type: '', source: 'local', line: bodyStart });
+      push({ name: m[1], type: '', source: 'local', line: lineOfMatch(m.index) });
     }
   }
 
