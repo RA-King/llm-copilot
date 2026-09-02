@@ -24,7 +24,9 @@
  * the scope and bindings; this module only interprets them.
  */
 
-import { Binding, DocLike, stripLiterals } from './signatureExtractor';
+import {
+  Binding, DocLike, PosLike, SurroundingContext, stripLiterals,
+} from './signatureExtractor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -214,4 +216,154 @@ function countGuards(doc: DocLike, fromLine: number, toLine: number, lang: strin
     if (!/^[})\]]/.test(text)) { break; }
   }
   return guards;
+}
+
+// ─── The block the cursor is inside ───────────────────────────────────────────
+
+const BLOCK_OPENERS: Array<[RegExp, ConstructKind]> = [
+  [/^(?:for|foreach)\b/i,                 'loop'],
+  [/^while\b/i,                           'loop'],
+  [/^do\b/i,                              'loop'],
+  [/^loop\b/,                             'loop'],
+  [/^(?:\}\s*)?else\s+if\b|^elif\b/,      'branch'],
+  [/^(?:\}\s*)?else\b/,                   'branch'],
+  [/^if\b|^unless\b/,                     'branch'],
+  [/^try\b|^begin\b/,                     'try'],
+  [/^(?:\}\s*)?(?:catch|except|rescue)\b/,'catch'],
+  [/^(?:\}\s*)?finally\b|^ensure\b/,      'finally'],
+  [/^switch\b|^match\b|^when\b/,          'switch'],
+  [/^with\b|^using\b/,                    'with'],
+];
+
+function opensBlock(text: string, lang: string): boolean {
+  if (/[{(\[]\s*$/.test(text)) { return true; }
+  if (/:\s*$/.test(text)) { return true; }                       // python, yaml
+  if (/\b(?:do|then)\s*(?:\|[^|]*\|)?\s*$/.test(text)) { return true; }  // ruby, lua, shell
+  if (lang === 'go' || lang === 'rust') { return /\{\s*$/.test(text); }
+  return false;
+}
+
+/**
+ * Walk up from the cursor to the nearest block header that is still open at the
+ * cursor's indentation — the loop, branch or catch the next statement lands in.
+ *
+ * `stopLine` is exclusive: pass the line of the enclosing function header so the
+ * header itself is not mistaken for a block the cursor is nested inside.
+ */
+export function findOpenConstruct(
+  doc: DocLike,
+  position: PosLike,
+  cursorIndent: number,
+  stopLine: number
+): OpenConstruct | null {
+  const lang = doc.languageId;
+
+  for (let i = position.line - 1; i > stopLine; i--) {
+    const raw = safeLine(doc, i);
+    const text = stripLiterals(raw, lang).trim();
+    if (!text) { continue; }
+    if (indentWidth(raw) >= cursorIndent) { continue; }
+    if (!opensBlock(text, lang)) { return null; }
+
+    for (const [pattern, kind] of BLOCK_OPENERS) {
+      if (!pattern.test(text)) { continue; }
+      return {
+        kind, line: i, header: text,
+        binding:   loopBinding(text, kind),
+        iterable:  loopIterable(text),
+        condition: blockCondition(text, kind),
+      };
+    }
+    return { kind: 'callback', line: i, header: text, binding: '', iterable: '', condition: '' };
+  }
+  return null;
+}
+
+function loopBinding(header: string, kind: ConstructKind): string {
+  if (kind === 'catch') {
+    return header.match(/(?:catch|except|rescue)\s*\(?\s*(?:[\w.]+\s+(?:as\s+)?)?([A-Za-z_$][\w$]*)/)?.[1] ?? '';
+  }
+  if (kind !== 'loop') { return ''; }
+  return (
+    header.match(/for\s*\(?\s*(?:const|let|var|final|auto)?\s*([A-Za-z_$][\w$]*)\s+(?:of|in)\b/)?.[1] ??
+    header.match(/for\s+([A-Za-z_$][\w$]*)\s+in\b/)?.[1] ??
+    header.match(/for\s*\(\s*(?:[\w<>\[\].]+\s+)?([A-Za-z_$][\w$]*)\s*:/)?.[1] ??
+    header.match(/for\s*\(\s*(?:const|let|var|int|size_t)?\s*([A-Za-z_$][\w$]*)\s*=/)?.[1] ??
+    ''
+  );
+}
+
+function loopIterable(header: string): string {
+  return (
+    header.match(/\b(?:of|in)\s+([A-Za-z_$][\w$.]*(?:\([^)]*\))?)/)?.[1] ??
+    header.match(/:\s*([A-Za-z_$][\w$.]*)\s*\)/)?.[1] ??
+    ''
+  ).replace(/\($/, '');
+}
+
+function blockCondition(header: string, kind: ConstructKind): string {
+  if (kind !== 'branch' && kind !== 'loop' && kind !== 'switch') { return ''; }
+  const paren = header.match(/\(([^)]*)\)\s*[{:]?\s*$/)?.[1];
+  if (paren) { return paren.trim(); }
+  return header.replace(/^(?:\}\s*)?(?:else\s+if|if|elif|unless|while|switch|match)\s*/, '')
+               .replace(/[:{]\s*$/, '').trim();
+}
+
+// ─── Accumulators ─────────────────────────────────────────────────────────────
+
+const EMPTY_INIT = /^(?:\[\]|\{\}|0|0\.0|''|""|``|new\s+\w+(?:<[^>]*>)?\(\s*\)|make\(|list\(\)|dict\(\)|set\(\)|\w+::new\(\))/;
+
+/**
+ * The right-hand side of a binding's declaration, read off the source line.
+ * `Binding.init` only carries one for declarations with no type annotation, and
+ * `const names: string[] = []` is exactly the case that matters here.
+ */
+function initialiserOf(doc: DocLike, binding: Binding): string {
+  if (binding.init) { return binding.init.trim(); }
+  const line = stripLiterals(safeLine(doc, binding.line), doc.languageId);
+  const escaped = binding.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rhs = line.match(new RegExp(`\\b${escaped}\\b[^=]*=\\s*(.+?);?\\s*$`));
+  return rhs ? rhs[1].trim() : '';
+}
+
+/**
+ * A local initialised to an empty collection, zero or an empty string is being
+ * filled in — when the cursor is inside a loop that follows it, the statement
+ * being typed is almost certainly the one that writes to it.
+ */
+function findAccumulator(
+  doc: DocLike,
+  bindings: Binding[],
+  openConstruct: OpenConstruct | null
+): Binding | null {
+  const candidates = bindings.filter(b =>
+    (b.source === 'local' || b.source === 'field') &&
+    EMPTY_INIT.test(initialiserOf(doc, b)));
+  if (!candidates.length) { return null; }
+  if (openConstruct && openConstruct.kind === 'loop') {
+    const before = candidates.filter(b => b.line < openConstruct.line);
+    if (before.length) { return before[before.length - 1]; }
+  }
+  return candidates[candidates.length - 1];
+}
+
+// ─── Return obligation ────────────────────────────────────────────────────────
+
+const VOID_TYPES = new Set(['void', 'None', 'none', 'unit', '()', 'Unit', 'undefined', 'never']);
+
+function owesReturn(ctx: SurroundingContext, body: string): boolean {
+  const e = ctx.enclosing;
+  if (!e) { return false; }
+  if (e.kind === 'constructor' || e.kind === 'setter') { return false; }
+
+  const declared = e.returnType.trim();
+  if (declared && VOID_TYPES.has(declared.replace(/^Promise<|>$/g, '').trim())) { return false; }
+  if (!declared && !ctx.returnExpressions.length) {
+    // No annotation and nothing returned yet — can't tell, and guessing here
+    // produces worse suggestions than staying quiet.
+    return false;
+  }
+  // Every return so far is indented deeper than the body itself, i.e. they are
+  // all guards or branch exits and the main path still has to produce a value.
+  return !/\n\s{0,4}return\s+\S/.test(body) || !ctx.returnExpressions.length;
 }
