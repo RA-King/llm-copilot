@@ -27,6 +27,9 @@
 import {
   Binding, DocLike, PosLike, SurroundingContext, stripLiterals,
 } from './signatureExtractor';
+import {
+  blockStyleFor, isControlLine, isEmptyInitialiser, isVoidType, matchLoop,
+} from './languageProfiles';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -236,11 +239,11 @@ const BLOCK_OPENERS: Array<[RegExp, ConstructKind]> = [
 ];
 
 function opensBlock(text: string, lang: string): boolean {
-  if (/[{(\[]\s*$/.test(text)) { return true; }
-  if (/:\s*$/.test(text)) { return true; }                       // python, yaml
+  const style = blockStyleFor(lang);
   if (/\b(?:do|then)\s*(?:\|[^|]*\|)?\s*$/.test(text)) { return true; }  // ruby, lua, shell
-  if (lang === 'go' || lang === 'rust') { return /\{\s*$/.test(text); }
-  return false;
+  if (style === 'indent') { return /:\s*$/.test(text); }
+  if (style === 'end') { return /\b(?:do|then|begin)\b\s*$/.test(text) || /^(?:if|unless|while|until|for|case|begin|def)\b/.test(text); }
+  return /[{(\[]\s*$/.test(text) || /:\s*$/.test(text);
 }
 
 /**
@@ -265,6 +268,16 @@ export function findOpenConstruct(
     if (indentWidth(raw) >= cursorIndent) { continue; }
     if (!opensBlock(text, lang)) { return null; }
 
+    // An iteration written as a method call with a block (`users.each do |u|`,
+    // `items.forEach(item => …)`) is a loop by every meaning that matters here.
+    if (!isControlLine(text) && matchLoop(text)) {
+      const loop = matchLoop(text)!;
+      return {
+        kind: 'loop', line: i, header: text,
+        binding: loop.binding, iterable: loop.iterable, condition: '',
+      };
+    }
+
     for (const [pattern, kind] of BLOCK_OPENERS) {
       if (!pattern.test(text)) { continue; }
       return {
@@ -284,21 +297,11 @@ function loopBinding(header: string, kind: ConstructKind): string {
     return header.match(/(?:catch|except|rescue)\s*\(?\s*(?:[\w.]+\s+(?:as\s+)?)?([A-Za-z_$][\w$]*)/)?.[1] ?? '';
   }
   if (kind !== 'loop') { return ''; }
-  return (
-    header.match(/for\s*\(?\s*(?:const|let|var|final|auto)?\s*([A-Za-z_$][\w$]*)\s+(?:of|in)\b/)?.[1] ??
-    header.match(/for\s+([A-Za-z_$][\w$]*)\s+in\b/)?.[1] ??
-    header.match(/for\s*\(\s*(?:[\w<>\[\].]+\s+)?([A-Za-z_$][\w$]*)\s*:/)?.[1] ??
-    header.match(/for\s*\(\s*(?:const|let|var|int|size_t)?\s*([A-Za-z_$][\w$]*)\s*=/)?.[1] ??
-    ''
-  );
+  return matchLoop(header)?.binding ?? '';
 }
 
 function loopIterable(header: string): string {
-  return (
-    header.match(/\b(?:of|in)\s+([A-Za-z_$][\w$.]*(?:\([^)]*\))?)/)?.[1] ??
-    header.match(/:\s*([A-Za-z_$][\w$.]*)\s*\)/)?.[1] ??
-    ''
-  ).replace(/\($/, '');
+  return matchLoop(header)?.iterable ?? '';
 }
 
 function blockCondition(header: string, kind: ConstructKind): string {
@@ -310,8 +313,6 @@ function blockCondition(header: string, kind: ConstructKind): string {
 }
 
 // ─── Accumulators ─────────────────────────────────────────────────────────────
-
-const EMPTY_INIT = /^(?:\[\]|\{\}|0|0\.0|''|""|``|new\s+\w+(?:<[^>]*>)?\(\s*\)|make\(|list\(\)|dict\(\)|set\(\)|\w+::new\(\))/;
 
 /**
  * The right-hand side of a binding's declaration, read off the source line.
@@ -326,11 +327,6 @@ function initialiserOf(doc: DocLike, binding: Binding): string {
   return rhs ? rhs[1].trim() : '';
 }
 
-/**
- * A local initialised to an empty collection, zero or an empty string is being
- * filled in — when the cursor is inside a loop that follows it, the statement
- * being typed is almost certainly the one that writes to it.
- */
 function findAccumulator(
   doc: DocLike,
   bindings: Binding[],
@@ -338,7 +334,7 @@ function findAccumulator(
 ): Binding | null {
   const candidates = bindings.filter(b =>
     (b.source === 'local' || b.source === 'field') &&
-    EMPTY_INIT.test(initialiserOf(doc, b)));
+    isEmptyInitialiser(initialiserOf(doc, b), b.type));
   if (!candidates.length) { return null; }
   if (openConstruct && openConstruct.kind === 'loop') {
     const before = candidates.filter(b => b.line < openConstruct.line);
@@ -349,15 +345,13 @@ function findAccumulator(
 
 // ─── Return obligation ────────────────────────────────────────────────────────
 
-const VOID_TYPES = new Set(['void', 'None', 'none', 'unit', '()', 'Unit', 'undefined', 'never']);
-
 function owesReturn(ctx: SurroundingContext, body: string): boolean {
   const e = ctx.enclosing;
   if (!e) { return false; }
   if (e.kind === 'constructor' || e.kind === 'setter') { return false; }
 
   const declared = e.returnType.trim();
-  if (declared && VOID_TYPES.has(declared.replace(/^Promise<|>$/g, '').trim())) { return false; }
+  if (declared && isVoidType(declared)) { return false; }
   if (!declared && !ctx.returnExpressions.length) {
     // No annotation and nothing returned yet — can't tell, and guessing here
     // produces worse suggestions than staying quiet.
