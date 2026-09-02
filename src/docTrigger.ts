@@ -5,8 +5,7 @@ import { chat, ChatMessage } from './llmProvider';
 //
 // When the LLM generates a doc comment, we do NOT apply it immediately.
 // Instead we store it here and return it from the InlineCompletionProvider
-// as native ghost text. The user Tab-accepts or Escape-dismisses — exactly
-// the same UX as Copilot inline suggestions.
+// as native ghost text. The user Tab-accepts or Escape-dismisses.
 //
 export interface PendingDocComment {
   uri:        string;   // document URI
