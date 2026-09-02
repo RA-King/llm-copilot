@@ -239,3 +239,148 @@ describe('renderIntentForPrompt', () => {
     expect(renderIntentForPrompt(at('▮\n'))).toBe('');
   });
 });
+
+describe('language coverage', () => {
+  /** Each fixture is the same job — accumulate into a list inside a loop. */
+  const collectors: Array<[string, string, string]> = [
+    ['typescript', 'names', [
+      'function collectNames(users: User[]): string[] {',
+      '  const names: string[] = [];',
+      '  for (const user of users) {',
+      '    \u25AE',
+      '  }',
+      '}',
+    ].join('\n')],
+    ['javascript', 'names', [
+      'function collectNames(users) {',
+      '  const names = [];',
+      '  users.forEach(user => {',
+      '    \u25AE',
+      '  });',
+      '}',
+    ].join('\n')],
+    ['python', 'names', [
+      'def collect_names(users):',
+      '    names = []',
+      '    for user in users:',
+      '        \u25AE',
+      '',
+    ].join('\n')],
+    ['java', 'names', [
+      'List<String> collectNames(List<User> users) {',
+      '    List<String> names = new ArrayList<>();',
+      '    for (User user : users) {',
+      '        \u25AE',
+      '    }',
+      '}',
+    ].join('\n')],
+    ['csharp', 'names', [
+      'public List<string> CollectNames(List<User> users) {',
+      '    var names = new List<string>();',
+      '    foreach (var user in users) {',
+      '        \u25AE',
+      '    }',
+      '}',
+    ].join('\n')],
+    ['go', 'names', [
+      'func collectNames(users []User) []string {',
+      '\tnames := []string{}',
+      '\tfor _, user := range users {',
+      '\t\t\u25AE',
+      '\t}',
+      '}',
+    ].join('\n')],
+    ['rust', 'names', [
+      'fn collect_names(users: &[User]) -> Vec<String> {',
+      '    let mut names = Vec::new();',
+      '    for user in users {',
+      '        \u25AE',
+      '    }',
+      '}',
+    ].join('\n')],
+    ['ruby', 'names', [
+      'def collect_names(users)',
+      '  names = []',
+      '  users.each do |user|',
+      '    \u25AE',
+      '  end',
+      'end',
+    ].join('\n')],
+    ['php', '$names', [
+      'function collectNames(array $users): array {',
+      '    $names = [];',
+      '    foreach ($users as $user) {',
+      '        \u25AE',
+      '    }',
+      '}',
+    ].join('\n')],
+    ['cpp', 'names', [
+      'std::vector<std::string> collectNames(const std::vector<User>& users) {',
+      '    std::vector<std::string> names;',
+      '    for (const auto& user : users) {',
+      '        \u25AE',
+      '    }',
+      '}',
+    ].join('\n')],
+    ['kotlin', 'names', [
+      'fun collectNames(users: List<User>): List<String> {',
+      '    val names = mutableListOf<String>()',
+      '    for (user in users) {',
+      '        \u25AE',
+      '    }',
+      '}',
+    ].join('\n')],
+    ['swift', 'names', [
+      'func collectNames(users: [User]) -> [String] {',
+      '    var names: [String] = []',
+      '    for user in users {',
+      '        \u25AE',
+      '    }',
+      '}',
+    ].join('\n')],
+    ['scala', 'names', [
+      'def collectNames(users: List[User]): List[String] = {',
+      '  val names = scala.collection.mutable.ListBuffer[String]()',
+      '  for (user <- users) {',
+      '    \u25AE',
+      '  }',
+      '}',
+    ].join('\n')],
+  ];
+
+  it.each(collectors)('reads the accumulating loop in %s', (lang, accumulator, source) => {
+    const intent = at(source, lang);
+
+    expect(intent.goalKind).toBe('create');
+    expect(intent.openConstruct?.kind).toBe('loop');
+    expect(intent.openConstruct?.iterable).toMatch(/users/);
+    expect(intent.accumulator?.name).toBe(accumulator);
+    expect(intent.nextSteps[0]).toContain(accumulator);
+  });
+
+  it('reads a Go error branch as an early return', () => {
+    const intent = at([
+      'func loadSettings(path string) (*Settings, error) {',
+      '\tdata, err := os.ReadFile(path)',
+      '\tif err != nil {',
+      '\t\t\u25AE',
+      '\t}',
+      '}',
+    ].join('\n'), 'go');
+
+    expect(intent.openConstruct?.kind).toBe('branch');
+    expect(intent.nextSteps[0]).toContain('error');
+  });
+
+  it('does not mistake a foreach header for the enclosing function', () => {
+    const intent = at([
+      'function collectNames(array $users): array {',
+      '    foreach ($users as $user) {',
+      '        \u25AE',
+      '    }',
+      '}',
+    ].join('\n'), 'php');
+
+    expect(intent.goal).toBe('collect names');
+  });
+});
