@@ -425,6 +425,15 @@ build:
    or two; on the line after an opening brace, the block. Turn it off with
    `llmCopilot.intentInference: false`.
 
+   The language-specific shapes this depends on — how a loop names what it
+   iterates, how a local is declared, what counts as an empty initialiser, which
+   types mean "returns nothing" — live in one table in `languageProfiles.ts`,
+   covering TypeScript, JavaScript, Python, Java, Kotlin, Scala, Groovy, C#,
+   C, C++, Rust, Go, Ruby, PHP, Swift and Dart. So `for _, user := range users`,
+   `foreach ($users as $user)`, `users.each do |user|`, `for (user <- users)`
+   and `for (const auto& user : users)` are all read as the same thing: a loop
+   over `users` binding `user`.
+
 5. **The contract to satisfy** — the return type the completion must produce,
    the partial line it must continue without repeating, and any problems the
    language server is already reporting nearby.
@@ -689,6 +698,7 @@ Key modules:
 | `signatureExtractor.ts` | Parse the enclosing signature, scope chain and every binding in scope, straight from the source. |
 | `semanticContext.ts` | Query the installed language server for resolved types, legal identifiers and cross-file declarations. |
 | `intentInference.ts` | Read the function's name, its unconsumed parameters, its dangling locals and the block the cursor is in, and predict what the next statement is doing. |
+| `languageProfiles.ts` | One table of the per-language shapes: loop forms, local declarations, empty initialisers, void types, comment markers, block style. |
 | `workspaceContext.ts` | Regex-scan the workspace for related declarations (the no-language-server fallback). |
 | `contextPrefetch.ts` | Resolve context during the debounce window and share it across keystrokes. |
 | `snippetValidator.ts` | Structurally validate and repair a candidate, then optionally hand it to the language's own parser. |
