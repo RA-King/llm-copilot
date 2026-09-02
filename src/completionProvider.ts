@@ -7,6 +7,7 @@ import { guardAgainstDuplication } from './duplicationGuard';
 import { getPendingDocComment, clearPendingDocComment } from './docTrigger';
 import { renderContextForPrompt, SurroundingContext } from './signatureExtractor';
 import { renderSemanticForPrompt, SemanticContext } from './semanticContext';
+import { renderIntentForPrompt, SuggestionShape } from './intentInference';
 import { validateStructure, validateWithInterpreter } from './snippetValidator';
 import { clearWorkspaceCaches } from './workspaceContext';
 import {
@@ -170,7 +171,7 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
 
     if (token.isCancellationRequested || !gathered) { return null; }
 
-    const { surrounding, semantic, workspace: workspaceSigs } = gathered;
+    const { surrounding, intent, semantic, workspace: workspaceSigs } = gathered;
 
     // The return type the completion has to satisfy: prefer the language
     // server's resolution, fall back to the declared annotation.
@@ -189,6 +190,10 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
         workspaceContext: workspaceSigs.context || undefined,
         surroundingContext: renderContextForPrompt(surrounding) || undefined,
         semanticContext: renderSemanticForPrompt(semantic) || undefined,
+        intentContext: cfg.get('intentInference', true)
+          ? renderIntentForPrompt(intent) || undefined
+          : undefined,
+        tokenBudget: TOKEN_BUDGET[intent.expectedShape],
         expectedReturnType,
         linePrefix: linePrefix.trim() ? linePrefix : undefined,
       }),
@@ -205,8 +210,15 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
       ? detectIndentStyle(document, editor)
       : { useTabs: false, tabSize: 2, unit: '  ' };
 
-    const formatted = formatCompletion(raw, document, safePos, indentStyle);
+    let formatted = formatCompletion(raw, document, safePos, indentStyle);
     if (!formatted) { return null; }
+
+    // Mid-expression, anything past the first line is the model carrying on
+    // past the thought the user was in the middle of writing.
+    if (intent.expectedShape === 'expression') {
+      formatted = formatted.split('\n')[0].trimEnd();
+      if (!formatted) { return null; }
+    }
 
     // ── Duplication guard (three levels) ─────────────────────────────────
     // Removes/rejects any suggestion that already exists in the file.
@@ -367,6 +379,19 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
     clearWorkspaceCaches();
   }
 }
+
+// ─── Reply length ─────────────────────────────────────────────────────────────
+
+/**
+ * How much room to give the model for each kind of cursor. Finishing a
+ * half-written expression needs a handful of tokens; the body of a block that
+ * was just opened needs the configured maximum.
+ */
+const TOKEN_BUDGET: Record<SuggestionShape, number> = {
+  expression: 64,
+  statement:  160,
+  block:      512,
+};
 
 // ─── Shared configuration ─────────────────────────────────────────────────────
 

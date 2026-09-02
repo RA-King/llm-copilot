@@ -6,6 +6,7 @@ import {
   gatherSemanticContext, emptySemanticContext, hasLanguageServer, SemanticContext,
 } from './semanticContext';
 import { gatherWorkspaceSignatures } from './workspaceContext';
+import { inferIntent, IntentContext } from './intentInference';
 
 /**
  * contextPrefetch.ts
@@ -38,6 +39,8 @@ import { gatherWorkspaceSignatures } from './workspaceContext';
 
 export interface PreparedContext {
   surrounding: SurroundingContext;
+  /** What the code so far says the author is about to write. */
+  intent: IntentContext;
   semantic: SemanticContext;
   workspace: { context: string; sources: string[] };
 }
@@ -96,6 +99,7 @@ async function gather(
   document: vscode.TextDocument,
   position: vscode.Position,
   surrounding: SurroundingContext,
+  intent: IntentContext,
   linePrefix: string,
   opts: PrepareOptions
 ): Promise<PreparedContext> {
@@ -120,7 +124,7 @@ async function gather(
       : Promise.resolve({ context: '', sources: [] as string[] }),
   ]);
 
-  return { surrounding, semantic, workspace };
+  return { surrounding, intent, semantic, workspace };
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -144,6 +148,10 @@ export function prepareContext(
     surrounding = emptySurrounding(document.languageId);
   }
 
+  // Derived from `surrounding` and the text above the cursor, so it is just as
+  // cheap and must be recomputed with it rather than served from the cache.
+  const intent = readIntent(document, position, surrounding, linePrefix);
+
   const key = keyFor(document, position, surrounding, linePrefix);
   const now = Date.now();
   const existing = cache.get(key);
@@ -153,16 +161,17 @@ export function prepareContext(
     // Reuse the resolved symbols, but pair them with the CURRENT surrounding
     // context so nothing downstream sees a stale signature.
     return {
-      promise: existing.promise.then(p => ({ ...p, surrounding })),
+      promise: existing.promise.then(p => ({ ...p, surrounding, intent })),
       cached: true,
       surrounding,
     };
   }
 
   misses++;
-  const promise = gather(document, position, surrounding, linePrefix, opts)
+  const promise = gather(document, position, surrounding, intent, linePrefix, opts)
     .catch(() => ({
       surrounding,
+      intent,
       semantic: emptySemanticContext(),
       workspace: { context: '', sources: [] as string[] },
     }));
@@ -239,6 +248,28 @@ function referenceWindow(document: vscode.TextDocument, position: vscode.Positio
   if (nearStart >= position.line) { return head; }
   const near = document.getText(new vscode.Range(nearStart, 0, position.line, 0));
   return `${head}\n${near}`;
+}
+
+function readIntent(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+  surrounding: SurroundingContext,
+  linePrefix: string
+): IntentContext {
+  try {
+    return inferIntent(document, position, surrounding, linePrefix);
+  } catch {
+    return emptyIntent();
+  }
+}
+
+export function emptyIntent(): IntentContext {
+  return {
+    goal: '', goalKind: 'unknown', subject: '',
+    unusedParams: [], unusedLocals: [], accumulator: null,
+    openConstruct: null, guardCount: 0, returnPending: false,
+    expectedShape: 'statement', nextSteps: [],
+  };
 }
 
 function emptySurrounding(language: string): SurroundingContext {
