@@ -101,6 +101,18 @@
         "title": "LLM Copilot: Show Selection Actions"
       },
       {
+        "command": "llmCopilot.explainTerminalError",
+        "title": "LLM Copilot: Explain Terminal Error"
+      },
+      {
+        "command": "llmCopilot.explainDebugError",
+        "title": "LLM Copilot: Explain Debug Error"
+      },
+      {
+        "command": "llmCopilot.errorAssist",
+        "title": "LLM Copilot: Analyse a Recent Error"
+      },
+      {
         "command": "llmCopilot.listClaudeCodeModels",
         "title": "LLM Copilot: List Claude Code Models"
       },
@@ -161,6 +173,11 @@
         "key": "ctrl+space",
         "mac": "ctrl+space",
         "when": "editorHasSelection && editorTextFocus"
+      },
+      {
+        "command": "llmCopilot.errorAssist",
+        "key": "ctrl+alt+e",
+        "mac": "ctrl+cmd+e"
       }
     ],
     "menus": {
@@ -218,6 +235,26 @@
         {
           "command": "llmCopilot.showSelectionActions",
           "when": "editorHasSelection",
+          "group": "llmCopilot@0"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "llmCopilot.explainTerminalError",
+          "group": "llmCopilot@0"
+        }
+      ],
+      "debug/callstack/context": [
+        {
+          "command": "llmCopilot.explainDebugError",
+          "when": "inDebugMode",
+          "group": "llmCopilot@0"
+        }
+      ],
+      "debug/variables/context": [
+        {
+          "command": "llmCopilot.explainDebugError",
+          "when": "inDebugMode",
           "group": "llmCopilot@0"
         }
       ]
@@ -405,6 +442,37 @@
           "type": "string",
           "default": "2024-12-01-preview",
           "description": "Azure OpenAI API version (used when provider is 'azure'). e.g. 2024-12-01-preview"
+        },
+        "llmCopilot.errorAssist.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Watch the terminal and the debug console for failures, and offer solutions for them"
+        },
+        "llmCopilot.errorAssist.autoOffer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a notification the moment a command fails or the debugger stops on an exception. Turn this off to reach the pane only from the menus (Ctrl+Alt+E)"
+        },
+        "llmCopilot.errorAssist.solutionCount": {
+          "type": "number",
+          "default": 4,
+          "minimum": 2,
+          "maximum": 8,
+          "description": "How many candidate fixes the error pane lists"
+        },
+        "llmCopilot.errorAssist.contextLines": {
+          "type": "number",
+          "default": 40,
+          "minimum": 10,
+          "maximum": 200,
+          "description": "Lines of source read around each failing line and sent with the error"
+        },
+        "llmCopilot.errorAssist.maxOutputLines": {
+          "type": "number",
+          "default": 120,
+          "minimum": 20,
+          "maximum": 500,
+          "description": "Most lines of captured output kept from a failed command or debug session"
         }
       }
     },

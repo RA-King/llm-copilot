@@ -49,6 +49,7 @@ LLM Copilot brings ghost-text autocomplete, inline chat, code actions (explain /
 - **Auto-formatting** — suggestions are re-indented to match your file's tab/space style and surrounding blank-line rhythm.
 - **Inline chat** (`Ctrl/Cmd+I`) — ask for a change right in the editor.
 - **AI chat sidebar** — a full chat panel in the activity bar.
+- **Terminal & debug error assist** — a failed command or an exception in the debugger opens a pane of candidate fixes; pick one and the whole thing (output, the source it names, the approach chosen) moves into the chat.
 - **Code actions on a selection** — Explain, Fix, Refactor, Generate doc comment, Generate unit tests.
 - **Scaffolding** — generate a constructor, getters/setters, interface/abstract-method implementations, or all class members.
 - **Commit message generation** — Conventional Commits format from your staged diff.
@@ -540,11 +541,25 @@ Select code, then either press `Ctrl+Space` (**Show Selection Actions** — a me
 
 Right-clicking a selection also shows these under the editor context menu.
 
-### 5. Documentation comments — `Ctrl/Cmd+Shift+D`
+### 5. Terminal & debug errors — `Ctrl+Alt+E`
+
+When a command fails in the terminal, or the debugger stops on an exception, the output is read for you: the exception and its message, the frames that name real files, and the source around the line that threw. What comes back is a short list of candidate fixes — one line each, most likely first — rather than one long answer that may have guessed the wrong cause.
+
+**From the terminal.** Right-click in the terminal panel and choose **LLM Copilot: Explain Terminal Error**. A selection is used if there is one; otherwise the last command that exited non-zero is. On VS Code 1.93+ commands are captured automatically through shell integration — on older builds, or in a terminal that has not sourced the shell hooks, select the error text first.
+
+**From the debugger.** Right-click in the call stack or variables view and choose **LLM Copilot: Explain Debug Error**. Exceptions the debugger stops on are captured with whatever the adapter knows about them; so is anything the program wrote before dying.
+
+**From anywhere.** `Ctrl+Alt+E` (`Ctrl+Cmd+E` on macOS) lists every failure captured so far, newest first, so an error that has already scrolled away is still reachable.
+
+Picking a fix opens the chat sidebar with the question already asked — the error, the resolved source, and the approach chosen — and the answer arrives with the edit in it. The conversation carries on from there like any other. The same pane also offers **Explain this error** (what it means, no fix yet), **Ask something about it…** (your own question, with everything attached), **Open the failing file** at the line, and **Copy the error text**.
+
+A failure that happens while you are watching also raises a *Show solutions* notification. Turn that off with `llmCopilot.errorAssist.autoOffer`, or turn the whole feature off with `llmCopilot.errorAssist.enabled`.
+
+### 6. Documentation comments — `Ctrl/Cmd+Shift+D`
 
 Place your cursor on (or just above) a function/class/method and run **Generate Doc Comment**. The comment is produced in the right style for the language (JSDoc, Javadoc, XML doc, Python docstring, Rustdoc, etc.) and shown as ghost text — `Tab` to accept.
 
-### 6. Class scaffolding
+### 7. Class scaffolding
 
 With the cursor inside a class/struct/interface, run any of:
 
@@ -555,15 +570,15 @@ With the cursor inside a class/struct/interface, run any of:
 
 The extension analyzes the surrounding structure (fields, existing members, unimplemented methods) and generates only what's missing.
 
-### 7. Generate unit tests — `Ctrl/Cmd+Shift+T`
+### 8. Generate unit tests — `Ctrl/Cmd+Shift+T`
 
 Select a function or class and run **Generate Unit Tests**. Set `llmCopilot.testFramework` (e.g. `jest`, `pytest`, `JUnit`) to pin a framework, or leave it blank to auto-detect.
 
-### 8. Commit messages — `Ctrl/Cmd+Shift+M`
+### 9. Commit messages — `Ctrl/Cmd+Shift+M`
 
 Stage your changes, then run **Generate Commit Message**. It reads your staged diff and writes a Conventional Commits message.
 
-### 9. Enable/disable & status
+### 10. Enable/disable & status
 
 - **`LLM Copilot: Toggle Enable/Disable`** turns completions on/off.
 - A status-bar item shows the current state (hide it with `llmCopilot.showStatusBar: false`).
@@ -593,6 +608,9 @@ Open the Command Palette (`Ctrl/Cmd+Shift+P`) and type "LLM Copilot":
 | `LLM Copilot: Generate Unit Tests` | Tests for the selection. |
 | `LLM Copilot: Generate Commit Message` | Commit message from the staged diff. |
 | `LLM Copilot: Show Selection Actions` | Quick-pick menu of actions for the selection. |
+| `LLM Copilot: Explain Terminal Error` | Read the selected (or last failed) terminal output and offer fixes. |
+| `LLM Copilot: Explain Debug Error` | Read what the debugger stopped on and offer fixes. |
+| `LLM Copilot: Analyse a Recent Error` | Pick from every failure captured so far. |
 | `LLM Copilot: List Claude Code Models` | List models exposed by a Claude Code proxy. |
 | `LLM Copilot: Diagnose Claude Code Connection` | Probe Claude Code proxy ports/paths. |
 
@@ -611,6 +629,7 @@ Open the Command Palette (`Ctrl/Cmd+Shift+P`) and type "LLM Copilot":
 | `Ctrl+Shift+D` | `Cmd+Shift+D` | Generate Doc Comment |
 | `Ctrl+Shift+M` | `Cmd+Shift+M` | Generate Commit Message |
 | `Ctrl+Space` | `Ctrl+Space` | Show Selection Actions (when text is selected) |
+| `Ctrl+Alt+E` | `Ctrl+Cmd+E` | Analyse a Recent Error (terminal or debugger) |
 
 > Some default shortcuts overlap VS Code built-ins; rebind them in **Preferences → Keyboard Shortcuts** if needed.
 
@@ -648,6 +667,11 @@ All settings are under the `llmCopilot.` prefix.
 | `semanticMaxDeclarations` | number | `4` | How many cross-file declarations to resolve and read in full (0–12). |
 | `validateWithInterpreter` | boolean | `false` | Run the language's own syntax checker over each suggestion and discard the ones it rejects. |
 | `interpreterTimeoutMs` | number | `2500` | Timeout for that checker (300–10000 ms). On timeout the suggestion is shown, not discarded. |
+| `errorAssist.enabled` | boolean | `true` | Watch the terminal and the debug console for failures and offer solutions for them. |
+| `errorAssist.autoOffer` | boolean | `true` | Raise a notification the moment something fails. Off = reach the pane from the menus or `Ctrl+Alt+E`. |
+| `errorAssist.solutionCount` | number | `4` | How many candidate fixes the pane lists (2–8). |
+| `errorAssist.contextLines` | number | `40` | Lines of source read around each failing line and sent with the error (10–200). |
+| `errorAssist.maxOutputLines` | number | `120` | Most lines of captured output kept from a failed command or session (20–500). |
 
 **Example `settings.json`:**
 
