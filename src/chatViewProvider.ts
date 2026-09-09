@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 import { chat, ChatMessage } from './llmProvider';
 
+const SYSTEM_PROMPT =
+  'You are an expert programming assistant. Help with code, debugging, architecture, ' +
+  'and best practices. Format code with markdown code blocks.';
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'llmCopilot.chatView';
   private _view?: vscode.WebviewView;
@@ -60,10 +64,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Build messages with system prompt
     const messages: ChatMessage[] = [
-      {
-        role: 'system',
-        content: 'You are an expert programming assistant. Help with code, debugging, architecture, and best practices. Format code with markdown code blocks.'
-      },
+      { role: 'system', content: SYSTEM_PROMPT },
       ...this.conversationHistory
     ];
 
@@ -112,8 +113,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage({ type: 'externalMessage', text });
   }
 
+  /**
+   * Starts a turn the user did not type. The error pane composes its own
+   * question — the failure, the source around it, and the approach chosen — and
+   * hands it over whole; `display` is the shorter version that appears in the
+   * bubble, and the reply lands in the conversation like any other, so the user
+   * can carry straight on asking about it.
+   */
+  public async ask(display: string, messages: ChatMessage[]): Promise<void> {
+    await this.reveal();
+
+    const question = [...messages].reverse().find(m => m.role === 'user');
+    this.conversationHistory.push({ role: 'user', content: question?.content ?? display });
+
+    this._view?.webview.postMessage({ type: 'seedUser', text: display });
+
+    try {
+      const response = await chat(messages);
+      this.conversationHistory.push({ role: 'assistant', content: response });
+      this._view?.webview.postMessage({ type: 'response', text: response });
+    } catch (err: any) {
+      this._view?.webview.postMessage({ type: 'error', message: err.message });
+    }
+  }
+
   public show() {
     this._view?.show(true);
+  }
+
+  /**
+   * Brings the panel up and waits for the webview to exist. A view that has
+   * never been opened resolves only once the focus command has run, and posting
+   * to it before that silently goes nowhere.
+   */
+  private async reveal(): Promise<void> {
+    this.show();
+    await vscode.commands.executeCommand('llmCopilot.chatView.focus');
+    for (let waited = 0; !this._view && waited < 2000; waited += 50) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
   }
 
   private getHtmlContent(): string {
@@ -540,6 +578,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           inputEl.value = '';
           inputEl.focus();
         }
+        break;
+      case 'seedUser':
+        addMessage('user', msg.text);
+        isThinking = true;
+        sendBtn.disabled = true;
+        showThinking();
         break;
       case 'externalMessage':
         inputEl.value = msg.text;

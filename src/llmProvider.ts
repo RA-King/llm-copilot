@@ -665,6 +665,111 @@ export function buildCommitMessagePrompt(diff: string): ChatMessage[] {
   ];
 }
 
+// ─── Error assistance ─────────────────────────────────────────────────────────
+
+/**
+ * Everything known about a failure the user is looking at, gathered from the
+ * terminal or the debug console and — where a frame pointed at a file in the
+ * workspace — the source around the line that threw.
+ */
+export interface ErrorContext {
+  /** Which panel the output came from: 'terminal' or 'debug'. */
+  source: string;
+  /** The command that failed, or the debug session that stopped. */
+  origin: string;
+  /** Runtime or tool the trace format belongs to — node, python, compiler, … */
+  runtime: string;
+  /** One-line summary of the failure. */
+  headline: string;
+  /** The output itself, already trimmed to the part that matters. */
+  errorText: string;
+  /** Source around the failing lines, fenced and labelled; '' when none resolved. */
+  codeContext: string;
+}
+
+function describeFailure(ctx: ErrorContext): string {
+  const where = ctx.source === 'debug'
+    ? `Debug session: ${ctx.origin}`
+    : `Command: ${ctx.origin}`;
+
+  const code = ctx.codeContext
+    ? `\n\nThe source at the frames named above:\n${ctx.codeContext}`
+    : '\n\nNo file from the trace could be resolved in the workspace, so reason from the output alone.';
+
+  return `${where}\nRuntime: ${ctx.runtime}\n\nOutput:\n\`\`\`text\n${ctx.errorText}\n\`\`\`${code}`;
+}
+
+/**
+ * Asks for a shortlist rather than an answer. The list is shown in a picker
+ * before anything longer is generated, so each entry has to be readable on one
+ * line and distinct from the others — different causes, not one cause phrased
+ * three ways.
+ */
+export function buildErrorSolutionsPrompt(ctx: ErrorContext, count: number): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        `You are an expert debugging assistant. Given a failure and the code around it, propose exactly ${count} ` +
+        'distinct candidate fixes, most likely first. Each must address a different possible cause.\n\n' +
+        'Format each one as:\n' +
+        '1. Short imperative title, under ten words\n' +
+        '   One or two sentences: the cause you are proposing, and the change that fixes it.\n\n' +
+        'Name real identifiers, files and line numbers from the material you were given. ' +
+        'No preamble, no closing summary, no code fences.',
+    },
+    { role: 'user', content: describeFailure(ctx) },
+  ];
+}
+
+/** The chosen entry, expanded into an answer with the actual edit in it. */
+export function buildErrorWalkthroughPrompt(
+  ctx: ErrorContext, solution: { title: string; detail: string }
+): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You are an expert debugging assistant working inside the editor. State the cause in a sentence or ' +
+        'two, then give the exact change as a code block fenced with the language name. Keep it to the ' +
+        'smallest edit that fixes the failure, and say what to check next if the cause cannot be confirmed ' +
+        'from what you were shown.',
+    },
+    {
+      role: 'user',
+      content:
+        `${describeFailure(ctx)}\n\nTake this approach:\n${solution.title}\n${solution.detail}\n\n` +
+        'Show me the change.',
+    },
+  ];
+}
+
+/** No fix yet — just what the output means. */
+export function buildErrorExplainPrompt(ctx: ErrorContext): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You are an expert debugging assistant. Explain what the failure means and what sequence of events ' +
+        'produces it, in plain language and few paragraphs. Do not propose a fix unless the cause is certain.',
+    },
+    { role: 'user', content: describeFailure(ctx) },
+  ];
+}
+
+/** A question of the user's own, carrying the failure as context. */
+export function buildErrorQuestionPrompt(ctx: ErrorContext, question: string): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You are an expert debugging assistant working inside the editor. Answer the question using the ' +
+        'failure and code below. Be concise, and fence any code with the language name.',
+    },
+    { role: 'user', content: `${question}\n\n${describeFailure(ctx)}` },
+  ];
+}
+
 /** Run diagnostic probes against a Claude Code server and return result lines */
 export async function diagnoseClaudeCode(baseUrl: string): Promise<string[]> {
   const results: string[] = [];

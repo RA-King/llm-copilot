@@ -11,6 +11,8 @@ import {
 import { DocTriggerWatcher, detectDeclaration, buildSmartDocPrompt, formatDocComment, getCommentStyleForLang } from './docTrigger';
 import { analyseStructure } from './structureAnalyzer';
 import { SelectionActionProvider } from './selectionActions';
+import { ErrorCaptureService } from './errorCapture';
+import { ErrorAssistant } from './errorAssist';
 import { extractMethodSignatures, buildSingleMethodImplPrompt } from './interfaceHelpers';
 
 let statusBar: StatusBarManager;
@@ -54,9 +56,43 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // ─── Error assist (terminal + debug pane) ─────────────────────────────────
+  // Failures are recorded as they happen so the pane still works minutes later,
+  // once the user has finished reading the trace. One that arrives while they
+  // are watching is offered straight away rather than waiting to be asked for.
+  const errorCapture = new ErrorCaptureService(captured => {
+    const cfg = vscode.workspace.getConfiguration('llmCopilot');
+    if (!cfg.get('errorAssist.autoOffer', true)) { return; }
+    const where = captured.source === 'debug' ? 'Debugger' : 'Terminal';
+    vscode.window.showWarningMessage(
+      `${where}: ${firstLine(captured.text)}`, 'Show solutions', 'Dismiss'
+    ).then(choice => {
+      if (choice === 'Show solutions') { void errorAssistant.analyse(captured); }
+    });
+  });
+  errorCapture.register();
+  context.subscriptions.push(errorCapture);
+
+  const errorAssistant = new ErrorAssistant(chatProvider, statusBar, errorCapture);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('llmCopilot.explainTerminalError', () =>
+      errorAssistant.analyseTerminal()),
+    vscode.commands.registerCommand('llmCopilot.explainDebugError', () =>
+      errorAssistant.analyseDebug()),
+    vscode.commands.registerCommand('llmCopilot.errorAssist', () =>
+      errorAssistant.pickRecent()),
+  );
+
   // ─── Helper ───────────────────────────────────────────────────────────────
 
   function getEditor() { return vscode.window.activeTextEditor; }
+
+  /** The headline of a capture, short enough for a notification. */
+  function firstLine(text: string): string {
+    const line = text.split('\n').find(l => l.trim())?.trim() ?? '';
+    return line.length > 100 ? line.slice(0, 97) + '…' : line;
+  }
 
   function getSelectedCode(editor: vscode.TextEditor): string {
     return editor.document.getText(editor.selection);
