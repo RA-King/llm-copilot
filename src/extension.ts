@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
-import { LLMInlineCompletionProvider, CompletionDebouncer } from './completionProvider';
+import {
+  LLMInlineCompletionProvider, CompletionDebouncer, ghostTextStats, recordDismissal,
+} from './completionProvider';
 import { ChatViewProvider } from './chatViewProvider';
 import { StatusBarManager } from './statusBar';
 import {
@@ -14,10 +16,12 @@ import { SelectionActionProvider } from './selectionActions';
 import { ErrorCaptureService } from './errorCapture';
 import { ErrorAssistant } from './errorAssist';
 import { extractMethodSignatures, buildSingleMethodImplPrompt } from './interfaceHelpers';
+import { ProjectIndex, IndexOptions, setProjectIndex } from './projectIndex';
 
 let statusBar: StatusBarManager;
 let completionProvider: LLMInlineCompletionProvider;
 let outputChannel: vscode.OutputChannel;
+let projectIndex: ProjectIndex;
 
 
 export function activate(context: vscode.ExtensionContext) {
@@ -35,6 +39,38 @@ export function activate(context: vscode.ExtensionContext) {
 
   const debouncer = new CompletionDebouncer();
   context.subscriptions.push({ dispose: () => debouncer.dispose() });
+
+  // ─── Whole-project index ──────────────────────────────────────────────────
+  // Everything downstream treats it as optional, so it is built in the
+  // background and nothing waits on it. Completions get sharper and error
+  // answers get deeper the moment it is ready, which on a warm cache is
+  // roughly as soon as the window opens.
+  projectIndex = new ProjectIndex(context.globalStorageUri, indexOptions());
+  setProjectIndex(projectIndex);
+  context.subscriptions.push({
+    dispose: () => { setProjectIndex(null); projectIndex.dispose(); },
+  });
+  void buildIndex(false);
+
+  // Editing a file changes what it declares. Saves are the honest moment to
+  // re-read — an index that tracked every keystroke would spend its time
+  // re-parsing half-written declarations.
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(doc => {
+      if (doc.uri.scheme === 'file') { void projectIndex.refresh(doc.uri); }
+    }),
+    vscode.workspace.onDidDeleteFiles(e => { for (const uri of e.files) { projectIndex.forget(uri); } }),
+    vscode.workspace.onDidCreateFiles(e => {
+      for (const uri of e.files) { void projectIndex.refresh(uri); }
+    }),
+    vscode.workspace.onDidRenameFiles(e => {
+      for (const { oldUri, newUri } of e.files) {
+        projectIndex.forget(oldUri);
+        void projectIndex.refresh(newUri);
+      }
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => { void buildIndex(true); }),
+  );
 
   const docTrigger = new DocTriggerWatcher(statusBar);
   context.subscriptions.push({ dispose: () => docTrigger.dispose() });
@@ -87,6 +123,59 @@ export function activate(context: vscode.ExtensionContext) {
   // ─── Helper ───────────────────────────────────────────────────────────────
 
   function getEditor() { return vscode.window.activeTextEditor; }
+
+  function indexOptions(): IndexOptions {
+    const cfg = vscode.workspace.getConfiguration('llmCopilot');
+    return {
+      maxFiles: cfg.get('projectIndex.maxFiles', 4000),
+      maxFileSizeKb: cfg.get('projectIndex.maxFileSizeKb', 256),
+      exclude: cfg.get('projectIndex.exclude', []),
+    };
+  }
+
+  /**
+   * Build or rebuild the index, reporting progress only when the user asked
+   * for it. The automatic build at startup is deliberately silent: it is
+   * housekeeping, and on a warm cache it is over before a notification would
+   * have finished animating.
+   */
+  async function buildIndex(visible: boolean): Promise<void> {
+    if (!vscode.workspace.getConfiguration('llmCopilot').get('projectIndex.enabled', true)) {
+      projectIndex.clear();
+      return;
+    }
+    projectIndex.setOptions(indexOptions());
+
+    const run = async (report?: (done: number, total: number) => void) => {
+      await projectIndex.findManifests();
+      await projectIndex.build(report);
+    };
+
+    if (!visible) {
+      try { await run(); } catch { /* an index that failed to build is simply absent */ }
+      return;
+    }
+
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'LLM Copilot: indexing the project' },
+      async progress => {
+        let lastPercent = 0;
+        await run((done, total) => {
+          const percent = total ? Math.floor((done / total) * 100) : 0;
+          if (percent > lastPercent) {
+            progress.report({ increment: percent - lastPercent, message: `${done} / ${total} files` });
+            lastPercent = percent;
+          }
+        });
+      }
+    );
+
+    const status = projectIndex.getStatus();
+    vscode.window.showInformationMessage(
+      `LLM Copilot: indexed ${status.files} files and ${status.symbols} symbols in ${status.builtInMs}ms` +
+      (status.truncated ? ' (stopped at the file ceiling — raise llmCopilot.projectIndex.maxFiles)' : '.')
+    );
+  }
 
   /** The headline of a capture, short enough for a notification. */
   function firstLine(text: string): string {
@@ -586,6 +675,51 @@ export function activate(context: vscode.ExtensionContext) {
       else { statusBar.setError('Failed'); vscode.window.showErrorMessage(`❌ ${result.message}`); }
     })
   );
+
+  // ─── Ghost text ───────────────────────────────────────────────────────────
+  // Escape is bound to this alongside the editor's own dismiss, so that saying
+  // no is remembered rather than only obeyed.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('llmCopilot.dismissGhostText', async () => {
+      recordDismissal();
+      await vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
+    })
+  );
+
+  // ─── Project index ────────────────────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('llmCopilot.rebuildProjectIndex', async () => {
+      projectIndex.clear();
+      await buildIndex(true);
+      completionProvider.clearCache();
+    }),
+    vscode.commands.registerCommand('llmCopilot.showProjectIndexStatus', () => {
+      const status = projectIndex.getStatus();
+      const digest = projectIndex.digest();
+      const pacing = ghostTextStats();
+
+      outputChannel.clear();
+      outputChannel.appendLine('LLM Copilot — project index');
+      outputChannel.appendLine('');
+      outputChannel.appendLine(`State:        ${status.state}`);
+      outputChannel.appendLine(`Files:        ${status.files}${status.truncated ? ' (ceiling reached)' : ''}`);
+      outputChannel.appendLine(`Symbols:      ${status.symbols}`);
+      outputChannel.appendLine(`Last build:   ${status.builtInMs}ms`);
+      outputChannel.appendLine('');
+      outputChannel.appendLine('Ghost text');
+      outputChannel.appendLine(`  Median round trip: ${pacing.medianMs}ms`);
+      outputChannel.appendLine(`  Last round trip:   ${pacing.lastMs}ms`);
+      outputChannel.appendLine(`  Current debounce:  ${pacing.debounceMs}ms`);
+      outputChannel.appendLine('');
+      outputChannel.appendLine(projectIndex.renderDigest() || 'Nothing indexed yet.');
+      if (digest.manifests.length) {
+        outputChannel.appendLine('');
+        outputChannel.appendLine(`Manifests: ${digest.manifests.join(', ')}`);
+      }
+      outputChannel.show(true);
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('llmCopilot.toggleEnabled', async () => {
       const cfg = vscode.workspace.getConfiguration('llmCopilot');
@@ -603,6 +737,12 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidCreateFiles(() => completionProvider.clearCache()),
     vscode.workspace.onDidDeleteFiles(() => completionProvider.clearCache()),
     vscode.workspace.onDidRenameFiles(() => completionProvider.clearCache()),
+  );
+
+  // A saved file has new declarations in it; the completion caches were keyed
+  // on the old ones.
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(() => completionProvider.clearCache())
   );
 
   // ─── Config changes ───────────────────────────────────────────────────────
@@ -626,6 +766,13 @@ export function activate(context: vscode.ExtensionContext) {
               await cfg.update('baseUrl', 'http://localhost:11434', vscode.ConfigurationTarget.Global);
             }
           }
+        }
+
+        // The index's own knobs change what it should hold, so it is rebuilt
+        // rather than merely re-read.
+        if (e.affectsConfiguration('llmCopilot.projectIndex')) {
+          projectIndex.clear();
+          void buildIndex(false);
         }
 
         statusBar.setIdle(); statusBar.updateVisibility();

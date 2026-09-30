@@ -14,6 +14,31 @@ import {
   prepareContext, prefetchContext, invalidateDocument, clearPrefetchCache,
   PrepareOptions,
 } from './contextPrefetch';
+import {
+  AdaptiveDebounce, ContinuationCache, DismissalMemory, GateLimits, TypingTracker,
+  DEFAULT_LIMITS, evaluateGate, trimToBudget,
+} from './suggestionGate';
+
+/**
+ * Shared ghost-text state.
+ *
+ * The provider and the debouncer are separate objects that VS Code calls at
+ * different times, and every intrusiveness rule depends on knowing what the
+ * other one just saw — whether the author is typing forward, what they have
+ * dismissed, how fast the model has been. Keeping that in one module-level
+ * object is what lets both of them reach the same verdict.
+ */
+const typing = new TypingTracker();
+const dismissals = new DismissalMemory();
+const continuation = new ContinuationCache();
+const pacing = new AdaptiveDebounce();
+
+/** Latency of the last completed request, for the status bar. */
+let lastLatencyMs = 0;
+
+export function ghostTextStats(): { medianMs: number; lastMs: number; debounceMs: number } {
+  return { medianMs: pacing.medianMs(), lastMs: lastLatencyMs, debounceMs: pacing.currentMs() };
+}
 
 export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemProvider {
   private cache = new Map<string, { text: string; timestamp: number }>();
@@ -92,31 +117,36 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
     const lineText = document.lineAt(safeLine).text;
     const safeChar = Math.max(0, Math.min(position.character, lineText.length));
     const safePos  = new vscode.Position(safeLine, safeChar);
+    const linePrefix = lineText.substring(0, safeChar);
+    const lineSuffix = lineText.substring(safeChar);
+
+    // An explicit invoke is the author asking, so it overrides the typing and
+    // dismissal rules — but not the rules about writing over their code.
+    const explicit = context.triggerKind === vscode.InlineCompletionTriggerKind.Invoke;
+    if (explicit) {
+      typing.noteExplicitInvoke();
+      dismissals.clear(document.uri.toString());
+    }
+
+    // ── Typed through an existing suggestion ────────────────────────────────
+    // Answered before anything else is computed: it is the one path that owes
+    // the author no latency at all.
+    const carried = continuation.continuation(document.uri.toString(), safeLine, linePrefix);
+    if (carried) {
+      return this.makeList(carried, safePos, lineText, safeChar);
+    }
 
     // ── Context analysis ────────────────────────────────────────────────────
     const cursorCtx = analyseCursorContext(document, safePos);
 
     // Suppress ghost text on pure doc-comment trigger lines (DocTriggerWatcher handles those)
-    const linePrefix = lineText.substring(0, safeChar);
-    const isDocTrigger =
-      /^\/\/\s*$/.test(linePrefix) ||
-      /^\/\*\*?\s*(\*\/)?\s*$/.test(linePrefix) ||
-      /^\/\/\/\s*$/.test(linePrefix) ||
-      /^#\s*$/.test(linePrefix);
-    if (isDocTrigger) { return null; }
+    if (isDocTriggerLine(linePrefix)) { return null; }
 
     // Check for keyword trigger even when intent would normally be suppressed
     const keywordHit = extractKeywordTrigger(linePrefix, document.languageId);
     const intentAllows = shouldSuggest(cursorCtx.intent);
 
     if (!intentAllows && !keywordHit) { return null; }
-
-    // ── Cache ───────────────────────────────────────────────────────────────
-    const cacheKey = this.buildCacheKey(document, safePos);
-    const cached   = this.getFromCache(cacheKey);
-    if (cached) {
-      return this.makeList(cached, safePos, document, lineText, safeChar);
-    }
 
     // ── Context window check (5 lines up, 5 lines down from where last typed) ──
     // Ghost text is only relevant near where the user is actively editing.
@@ -128,10 +158,6 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
       const lineDelta  = Math.abs(cursorLine - safeLine);
       if (lineDelta > 5) { return null; }
     }
-
-    // Allow both Automatic and Invoke — the debouncer controls timing.
-    // Automatic is fine here because the provider returns quickly (cache hits)
-    // and the LLM path has its own debounce via the CompletionDebouncer.
 
     // ── Build LLM request ───────────────────────────────────────────────────
     const contextLines: number = cfg.get('contextLines', 50);
@@ -171,13 +197,42 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
 
     if (token.isCancellationRequested || !gathered) { return null; }
 
-    const { surrounding, intent, semantic, workspace: workspaceSigs } = gathered;
+    const { surrounding, intent, semantic, workspace: workspaceSigs, project } = gathered;
+
+    // ── The gate ────────────────────────────────────────────────────────────
+    // Everything about whether a suggestion belongs here, and how much of one,
+    // in a single verdict both this provider and the debouncer respect.
+    const limits = gateLimits(cfg);
+    const verdict = evaluateGate({
+      language: document.languageId,
+      linePrefix, lineSuffix,
+      previousLine: safeLine > 0 ? document.lineAt(safeLine - 1).text : '',
+      shape: intent.expectedShape,
+      singleEmptyCursor: isSingleEmptyCursor(document),
+      typingForward: explicit || typing.isTypingForward(),
+      recentlyDismissed: !explicit
+        && dismissals.isDismissed(document.uri.toString(), safeLine, linePrefix),
+      limits,
+    });
+
+    if (!verdict.show) { return null; }
+
+    // ── Cache ───────────────────────────────────────────────────────────────
+    // Keyed on the same things the gate was decided from, so a cached answer
+    // is never served into a cursor that would now be refused.
+    const cacheKey = this.buildCacheKey(document, safePos);
+    const cached   = this.getFromCache(cacheKey);
+    if (cached) {
+      continuation.remember(document.uri.toString(), safeLine, linePrefix, cached);
+      return this.makeList(cached, safePos, lineText, safeChar);
+    }
 
     // The return type the completion has to satisfy: prefer the language
     // server's resolution, fall back to the declared annotation.
     const expectedReturnType =
       resolveReturnType(semantic, surrounding) || undefined;
 
+    const startedAt = Date.now();
     const raw = await Promise.race([
       getCompletion({
         prefix, suffix,
@@ -188,12 +243,14 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
         nestingDepth: cursorCtx.nestingDepth,
         structure: cursorCtx.structure,
         workspaceContext: workspaceSigs.context || undefined,
+        projectContext: project || undefined,
         surroundingContext: renderContextForPrompt(surrounding) || undefined,
         semanticContext: renderSemanticForPrompt(semantic) || undefined,
         intentContext: cfg.get('intentInference', true)
           ? renderIntentForPrompt(intent) || undefined
           : undefined,
-        tokenBudget: TOKEN_BUDGET[intent.expectedShape],
+        tokenBudget: TOKEN_BUDGET[verdict.shape],
+        maxLines: verdict.maxLines,
         expectedReturnType,
         linePrefix: linePrefix.trim() ? linePrefix : undefined,
       }),
@@ -201,6 +258,9 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
         token.onCancellationRequested(() => reject(new Error('cancelled')))
       ),
     ]);
+
+    lastLatencyMs = Date.now() - startedAt;
+    pacing.observe(lastLatencyMs);
 
     if (!raw?.trim()) { return null; }
 
@@ -213,12 +273,14 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
     let formatted = formatCompletion(raw, document, safePos, indentStyle);
     if (!formatted) { return null; }
 
-    // Mid-expression, anything past the first line is the model carrying on
-    // past the thought the user was in the middle of writing.
-    if (intent.expectedShape === 'expression') {
-      formatted = formatted.split('\n')[0].trimEnd();
-      if (!formatted) { return null; }
-    }
+    // ── Length ──────────────────────────────────────────────────────────────
+    // The prompt asked for a bounded answer; this enforces it. A model that
+    // wrote past the budget is cut at the last point the snippet is balanced,
+    // and refused outright when there is no such point — half a block is worse
+    // than nothing.
+    const trimmed = trimToBudget(formatted, verdict.maxLines);
+    if (!trimmed) { return null; }
+    formatted = trimmed;
 
     // ── Duplication guard (three levels) ─────────────────────────────────
     // Removes/rejects any suggestion that already exists in the file.
@@ -262,74 +324,40 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
     }
 
     this.saveToCache(cacheKey, candidate);
-    return this.makeList(candidate, safePos, document, lineText, safeChar);
+    continuation.remember(document.uri.toString(), safeLine, linePrefix, candidate);
+    return this.makeList(candidate, safePos, lineText, safeChar);
   }
 
   /**
-   * Build an InlineCompletionList whose item:
-   *  - Replaces the remainder of the current line (so Tab inserts cleanly)
-   *  - Uses SnippetString so the cursor lands at the end of the insertion
-   *  - Is correctly indented for the first line (already handled by formatter)
+   * Build an InlineCompletionList whose item is inserted at the cursor and
+   * nowhere else.
+   *
+   * The range matters more than it looks. Replacing as far as the end of the
+   * line is right when only whitespace follows — it keeps a trailing space
+   * from being stranded after an accept — and wrong the moment anything else
+   * does, because accepting would then delete the author's own text. The gate
+   * refuses that cursor anyway; the narrower range here is the second lock on
+   * the same door.
    */
   private makeList(
     text: string,
     pos: vscode.Position,
-    doc: vscode.TextDocument,
     lineText: string,
     safeChar: number
   ): vscode.InlineCompletionList {
     if (!text) { return new vscode.InlineCompletionList([]); }
 
-    // The range to replace: from cursor to the end of the current line.
-    // This ensures that Tab-accepting the suggestion doesn't leave dangling
-    // text from the partial keyword that was already typed.
-    const lineEnd = lineText.length;
-    const replaceRange = new vscode.Range(
-      pos.line, safeChar,
-      pos.line, lineEnd
-    );
-
-    // The duplication guard has already stripped echoed prefixes upstream.
-    // Just pass the text through directly here.
-    const textToInsert = text;
-    if (!textToInsert) { return new vscode.InlineCompletionList([]); }
+    const rest = lineText.substring(safeChar);
+    const replaceTo = /^\s*$/.test(rest) ? lineText.length : safeChar;
+    const replaceRange = new vscode.Range(pos.line, safeChar, pos.line, replaceTo);
 
     const item = new vscode.InlineCompletionItem(
       // Use SnippetString with $0 at end so cursor lands after insertion
-      new vscode.SnippetString(escapeSnippet(textToInsert) + '$0'),
+      new vscode.SnippetString(escapeSnippet(text) + '$0'),
       replaceRange
     );
 
     return new vscode.InlineCompletionList([item]);
-  }
-
-  /**
-   * If the LLM echoed back the already-typed line prefix, strip it from the
-   * completion so the inserted text doesn't duplicate what's already there.
-   */
-  private stripEchoedPrefix(
-    completion: string,
-    lineText: string,
-    safeChar: number
-  ): string {
-    const typedOnLine = lineText.substring(0, safeChar).trimStart();
-    if (!typedOnLine) { return completion; }
-
-    const lines = completion.split('\n');
-    const firstLine = lines[0];
-
-    // If the first line of the completion starts with what's already typed, remove it
-    const firstTrimmed = firstLine.trimStart();
-    if (firstTrimmed.startsWith(typedOnLine)) {
-      lines[0] = firstLine.slice(firstLine.indexOf(typedOnLine) + typedOnLine.length);
-    }
-
-    // Remove now-empty first line if the rest follows
-    if (lines[0].trim() === '' && lines.length > 1) {
-      lines.shift();
-    }
-
-    return lines.join('\n');
   }
 
   // ─── Context / cache helpers ────────────────────────────────────────────
@@ -377,6 +405,8 @@ export class LLMInlineCompletionProvider implements vscode.InlineCompletionItemP
     this.cache.clear();
     clearPrefetchCache();
     clearWorkspaceCaches();
+    continuation.clear();
+    dismissals.clear();
   }
 }
 
@@ -407,6 +437,17 @@ export function prepareOptions(cfg: vscode.WorkspaceConfiguration): PrepareOptio
     maxSymbols:        cfg.get('semanticMaxSymbols', 30),
     maxDeclarations:   cfg.get('semanticMaxDeclarations', 4),
     workspaceBudgetMs: cfg.get('workspaceScanBudgetMs', 700),
+    projectEnabled:    cfg.get('projectIndex.enabled', true),
+    projectBudgetChars: cfg.get('projectIndex.completionBudgetChars', 2400),
+  };
+}
+
+/** The ghost-text ceilings, read from settings. */
+export function gateLimits(cfg: vscode.WorkspaceConfiguration): GateLimits {
+  return {
+    statementLines: cfg.get('ghostText.maxStatementLines', DEFAULT_LIMITS.statementLines),
+    blockLines: cfg.get('ghostText.maxBlockLines', DEFAULT_LIMITS.blockLines),
+    minIdentifierChars: cfg.get('ghostText.minIdentifierChars', DEFAULT_LIMITS.minIdentifierChars),
   };
 }
 
@@ -443,6 +484,22 @@ function escapeSnippet(text: string): string {
     .replace(/}/g, '\\}');
 }
 
+// ─── Shared line tests ────────────────────────────────────────────────────────
+
+/** `//`, `/**`, `///` or `#` on their own: the doc-comment watcher owns these. */
+function isDocTriggerLine(linePrefix: string): boolean {
+  return /^\/\/\s*$/.test(linePrefix)
+    || /^\/\*\*?\s*(\*\/)?\s*$/.test(linePrefix)
+    || /^\/\/\/\s*$/.test(linePrefix)
+    || /^#\s*$/.test(linePrefix);
+}
+
+function isSingleEmptyCursor(document: vscode.TextDocument): boolean {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document !== document) { return true; }
+  return editor.selections.length === 1 && editor.selection.isEmpty;
+}
+
 // ─── Debouncer ────────────────────────────────────────────────────────────────
 
 export class CompletionDebouncer {
@@ -457,6 +514,10 @@ export class CompletionDebouncer {
     // Track cursor movement: if user moves more than 5 lines from where ghost
     // text was triggered, dismiss the suggestion immediately.
     this.cursorMoveDisposable = vscode.window.onDidChangeTextEditorSelection(e => {
+      // A cursor that moves without the document changing has left whatever
+      // was proposed behind; the continuation is no longer about this line.
+      continuation.clear();
+
       if (this.lastTriggerLine < 0) { return; }
       const curLine = e.selections[0]?.active.line ?? -1;
       if (curLine < 0) { return; }
@@ -480,13 +541,30 @@ export class CompletionDebouncer {
     if (!event.contentChanges.length) { return; }
 
     const change = event.contentChanges[0];
+
+    // Feed the typing tracker before anything else decides on this change:
+    // a deletion has to suppress the suggestion it would otherwise trigger.
+    typing.note({
+      insertedLength: change.text.length,
+      removedLength: change.rangeLength,
+    });
+
     if (change.text.length > 50) {
       // A paste rewrites structure — anything cached for this file is stale.
       invalidateDocument(event.document.uri);
+      continuation.clear();
       return;
     }
     if (change.text.includes('\n') || change.range.start.line !== change.range.end.line) {
       invalidateDocument(event.document.uri);
+    }
+
+    // Deleting is not a request for a suggestion. Nothing fires, and whatever
+    // was on screen goes with the change.
+    if (!typing.isTypingForward()) {
+      if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+      continuation.clear();
+      return;
     }
 
     if (editor.document.lineCount === 0) { return; }
@@ -496,38 +574,49 @@ export class CompletionDebouncer {
     let lineText   = '';
     try { lineText = editor.document.lineAt(safeLine).text; } catch { return; }
 
-    const linePrefix = lineText.substring(0, Math.min(pos.character, lineText.length));
-    const charsAfter = lineText.length - Math.min(pos.character, lineText.length);
-
-    // ── Keyword trigger: fire quickly (reduced debounce) ─────────────────
-    const keyword = extractKeywordTrigger(linePrefix, editor.document.languageId);
-    if (keyword) {
-      if (this.timer) { clearTimeout(this.timer); }
-      // Shorter debounce for keywords (user likely just finished the word)
-      const keywordDebounce = Math.min(cfg.get<number>('debounceMs', 600), 400);
-      this.lastTriggerLine = safeLine;
-      this.warm(editor.document, pos, linePrefix, cfg);
-      this.timer = setTimeout(() => this.fireTrigger(event.document), keywordDebounce);
-      return;
-    }
+    const safeChar   = Math.min(pos.character, lineText.length);
+    const linePrefix = lineText.substring(0, safeChar);
+    const lineSuffix = lineText.substring(safeChar);
 
     // ── Suppress on pure comment-trigger lines ──────────────────────────
     // These are handled exclusively by DocTriggerWatcher, not ghost text.
-    const trimmedPrefix = linePrefix.trim();
-    const isDocTriggerLine =
-      /^\/\/\s*$/.test(linePrefix) ||          // //
-      /^\/\*\*?\s*(\*\/)?\s*$/.test(linePrefix) || // /** or /* */
-      /^\/\/\/\s*$/.test(linePrefix) ||        // /// (Rust)
-      /^#\s*$/.test(linePrefix);                // # (Python/Ruby)
-    if (isDocTriggerLine) { return; }
+    if (isDocTriggerLine(linePrefix)) { return; }
 
-    // ── Standard suppression rules ────────────────────────────────────────
-    if (trimmedPrefix.length > 10 && charsAfter > 2) { return; }
-    if (trimmedPrefix.length > 15 && charsAfter === 0 && change.text.length === 0) { return; }
+    // ── The gate, cheaply ────────────────────────────────────────────────
+    // The full verdict needs the inferred shape, which costs a context gather;
+    // the rules that do not — code after the cursor, a dismissal, a selection
+    // — are worth applying here so the timer is never set for a cursor the
+    // provider is going to refuse.
+    const preliminary = evaluateGate({
+      language: editor.document.languageId,
+      linePrefix, lineSuffix,
+      previousLine: safeLine > 0 ? editor.document.lineAt(safeLine - 1).text : '',
+      shape: 'statement',
+      singleEmptyCursor: editor.selections.length === 1 && editor.selection.isEmpty,
+      typingForward: true,
+      recentlyDismissed: dismissals.isDismissed(
+        editor.document.uri.toString(), safeLine, linePrefix),
+      limits: gateLimits(cfg),
+    });
+    if (!preliminary.show) { return; }
+
+    // ── Keyword trigger: fire quickly (reduced debounce) ─────────────────
+    const keyword = extractKeywordTrigger(linePrefix, editor.document.languageId);
+
+    pacing.configure(
+      cfg.get('ghostText.minDebounceMs', 150),
+      cfg.get('debounceMs', 600)
+    );
+    const adaptive = cfg.get('ghostText.adaptiveDebounce', true);
+    const baseDebounce = adaptive ? pacing.currentMs() : cfg.get<number>('debounceMs', 600);
 
     if (this.timer) { clearTimeout(this.timer); }
-    const debounceMs: number = cfg.get('debounceMs', 600);
+    this.lastTriggerLine = safeLine;
     this.warm(editor.document, pos, linePrefix, cfg);
+
+    // A keyword the author has just finished typing is an unusually strong
+    // signal about what comes next, so it does not wait as long.
+    const debounceMs = keyword ? Math.min(baseDebounce, 400) : baseDebounce;
     this.timer = setTimeout(() => this.fireTrigger(event.document), debounceMs);
   }
 
@@ -571,12 +660,7 @@ export class CompletionDebouncer {
       const linePrefix = lineText.substring(0, safePos.character);
 
       // Suppress ghost text on pure doc-comment trigger lines
-      const isDocLine =
-        /^\/\/\s*$/.test(linePrefix) ||
-        /^\/\*\*?\s*(\*\/)?\s*$/.test(linePrefix) ||
-        /^\/\/\/\s*$/.test(linePrefix) ||
-        /^#\s*$/.test(linePrefix);
-      if (isDocLine) { return; }
+      if (isDocTriggerLine(linePrefix)) { return; }
 
       const keyword = extractKeywordTrigger(linePrefix, ed.document.languageId);
       if (!keyword) {
@@ -597,4 +681,24 @@ export class CompletionDebouncer {
     this.disposable.dispose();
     this.cursorMoveDisposable.dispose();
   }
+}
+
+// ─── Dismissal ────────────────────────────────────────────────────────────────
+
+/**
+ * Called from the Escape binding. VS Code hides the ghost text itself; what it
+ * cannot do is remember that the author said no, which is the part that stops
+ * the same suggestion reappearing on the next keystroke.
+ */
+export function recordDismissal(): void {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) { return; }
+  const pos = editor.selection.active;
+  const line = editor.document.lineAt(Math.min(pos.line, editor.document.lineCount - 1));
+  dismissals.record(
+    editor.document.uri.toString(),
+    pos.line,
+    line.text.substring(0, Math.min(pos.character, line.text.length))
+  );
+  continuation.clear();
 }

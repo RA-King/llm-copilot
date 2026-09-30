@@ -7,6 +7,7 @@ import {
 } from './semanticContext';
 import { gatherWorkspaceSignatures } from './workspaceContext';
 import { inferIntent, IntentContext } from './intentInference';
+import { getProjectIndex } from './projectIndex';
 
 /**
  * contextPrefetch.ts
@@ -43,6 +44,11 @@ export interface PreparedContext {
   intent: IntentContext;
   semantic: SemanticContext;
   workspace: { context: string; sources: string[] };
+  /**
+   * Declarations and related files drawn from the whole-project index. Empty
+   * while the index is still building, or when it is switched off.
+   */
+  project: string;
 }
 
 export interface PrepareOptions {
@@ -51,6 +57,8 @@ export interface PrepareOptions {
   maxSymbols: number;
   maxDeclarations: number;
   workspaceBudgetMs: number;
+  projectEnabled: boolean;
+  projectBudgetChars: number;
 }
 
 interface CacheEntry {
@@ -105,9 +113,18 @@ async function gather(
 ): Promise<PreparedContext> {
   const language = document.languageId;
 
+  // The whole-project index answers the cross-file question outright, from
+  // memory, so when it is warm neither of the two fallbacks below is worth
+  // paying for: the language server is asked only about the cursor, and the
+  // regex sweep is skipped entirely.
+  const project = opts.projectEnabled
+    ? projectContextFor(document, position, opts.projectBudgetChars)
+    : '';
+
   // Once real symbol resolution is available, the regex sweep over the
   // workspace is redundant work on the critical path — skip it.
-  const needWorkspaceScan = !(opts.semanticEnabled && hasLanguageServer(language));
+  const needWorkspaceScan =
+    !project && !(opts.semanticEnabled && hasLanguageServer(language));
 
   const [semantic, workspace] = await Promise.all([
     opts.semanticEnabled
@@ -124,7 +141,53 @@ async function gather(
       : Promise.resolve({ context: '', sources: [] as string[] }),
   ]);
 
-  return { surrounding, intent, semantic, workspace };
+  return { surrounding, intent, semantic, workspace, project };
+}
+
+/**
+ * The cross-file block for this cursor, out of the project index.
+ *
+ * Synchronous and in-memory by design. The index was built once in the
+ * background precisely so that this — the thing on the completion path — is a
+ * couple of map lookups rather than a scan, which is what makes cross-file
+ * context affordable on every keystroke rather than only on invoke.
+ */
+function projectContextFor(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+  budgetChars: number
+): string {
+  const index = getProjectIndex();
+  if (!index || !index.isReady()) { return ''; }
+
+  const relative = vscode.workspace.asRelativePath(document.uri, false).replace(/\\/g, '/');
+  const referenced = referencedNames(document, position);
+  try {
+    return index.completionContext(relative, referenced, budgetChars);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The names the cursor's own file has in play: everything it imports, plus the
+ * identifiers written near the cursor. That is the set whose declarations the
+ * completion might need, and it is small enough to look up in full.
+ */
+function referencedNames(
+  document: vscode.TextDocument, position: vscode.Position
+): string[] {
+  const names = new Set<string>();
+
+  const index = getProjectIndex();
+  const relative = vscode.workspace.asRelativePath(document.uri, false).replace(/\\/g, '/');
+  for (const name of index?.get(relative)?.importedNames ?? []) { names.add(name); }
+
+  const from = Math.max(0, position.line - 30);
+  const near = document.getText(new vscode.Range(from, 0, position.line, position.character));
+  for (const m of near.matchAll(/\b([A-Za-z_$][\w$]{2,})\b/g)) { names.add(m[1]); }
+
+  return [...names].slice(0, 40);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -174,6 +237,7 @@ export function prepareContext(
       intent,
       semantic: emptySemanticContext(),
       workspace: { context: '', sources: [] as string[] },
+      project: '',
     }));
 
   evictStale(now);

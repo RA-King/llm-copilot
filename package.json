@@ -119,6 +119,21 @@
       {
         "command": "llmCopilot.diagnoseClaudeCode",
         "title": "LLM Copilot: Diagnose Claude Code Connection"
+      },
+      {
+        "command": "llmCopilot.rebuildProjectIndex",
+        "title": "Rebuild Project Index",
+        "category": "LLM Copilot"
+      },
+      {
+        "command": "llmCopilot.showProjectIndexStatus",
+        "title": "Show Project Index Status",
+        "category": "LLM Copilot"
+      },
+      {
+        "command": "llmCopilot.dismissGhostText",
+        "title": "Dismiss Ghost Text",
+        "category": "LLM Copilot"
       }
     ],
     "keybindings": [
@@ -178,6 +193,11 @@
         "command": "llmCopilot.errorAssist",
         "key": "ctrl+alt+e",
         "mac": "ctrl+cmd+e"
+      },
+      {
+        "command": "llmCopilot.dismissGhostText",
+        "key": "escape",
+        "when": "inlineSuggestionVisible && editorTextFocus && !editorReadonly"
       }
     ],
     "menus": {
@@ -473,6 +493,85 @@
           "minimum": 20,
           "maximum": 500,
           "description": "Most lines of captured output kept from a failed command or debug session"
+        },
+        "llmCopilot.ghostText.adaptiveDebounce": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set the wait before asking from how fast the model has actually been answering, instead of always using the configured debounce. A fast local model then suggests sooner; a slow hosted one is not asked more often."
+        },
+        "llmCopilot.ghostText.minDebounceMs": {
+          "type": "number",
+          "default": 150,
+          "minimum": 0,
+          "maximum": 2000,
+          "description": "Shortest wait the adaptive debounce will settle on. llmCopilot.debounceMs remains the longest."
+        },
+        "llmCopilot.ghostText.maxStatementLines": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 40,
+          "description": "Most lines a statement-sized suggestion may occupy. Anything longer is cut back to the last balanced line."
+        },
+        "llmCopilot.ghostText.maxBlockLines": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 80,
+          "description": "Most lines a block-sized suggestion may occupy — the body of a block that was just opened."
+        },
+        "llmCopilot.ghostText.minIdentifierChars": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 8,
+          "description": "How much of an identifier must be typed before ghost text is worth offering. Below this the editor's own completion list is the better answer."
+        },
+        "llmCopilot.projectIndex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Index the whole project — every declaration and every import — so completions and error answers can use the real signatures from anywhere in the codebase. Built in the background and cached on disk between sessions."
+        },
+        "llmCopilot.projectIndex.maxFiles": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 100,
+          "maximum": 50000,
+          "description": "Most source files the index will hold. Reached on a very large repository; raise it if 'Show Project Index Status' reports the ceiling."
+        },
+        "llmCopilot.projectIndex.maxFileSizeKb": {
+          "type": "number",
+          "default": 256,
+          "minimum": 16,
+          "maximum": 4096,
+          "description": "Files larger than this are skipped — generated bundles and vendored sources cost time and teach the model nothing."
+        },
+        "llmCopilot.projectIndex.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra globs to keep out of the index, on top of node_modules, build output and version-control directories."
+        },
+        "llmCopilot.projectIndex.completionBudgetChars": {
+          "type": "number",
+          "default": 2400,
+          "minimum": 0,
+          "maximum": 20000,
+          "description": "Characters of project context sent with each completion. Zero turns it off for completions while leaving it on for error assistance."
+        },
+        "llmCopilot.errorAssist.deepContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send the error together with what the rest of the project says about it — where the names involved are declared, what imports the failing file, and the project manifest."
+        },
+        "llmCopilot.errorAssist.projectContextChars": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 0,
+          "maximum": 40000,
+          "description": "Characters of project context sent with an error."
         }
       }
     },
