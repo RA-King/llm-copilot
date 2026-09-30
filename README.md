@@ -28,6 +28,9 @@ LLM Copilot brings ghost-text autocomplete, inline chat, code actions (explain /
   - [Claude Code (local CLI proxy)](#claude-code-local-cli-proxy)
   - [Custom OpenAI-compatible endpoint](#custom-openai-compatible-endpoint)
 - [Usage & tutorials](#usage--tutorials)
+  - [Inline completions (ghost text)](#1-inline-completions-ghost-text)
+  - [The project index](#5-the-project-index)
+  - [Terminal & debug errors](#6-terminal--debug-errors--ctrlalte)
 - [Commands reference](#commands-reference)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Settings reference](#settings-reference)
@@ -39,6 +42,9 @@ LLM Copilot brings ghost-text autocomplete, inline chat, code actions (explain /
 ## Features
 
 - **Inline ghost-text completions** — Copilot-style suggestions as you type; `Tab` to accept, `Esc` to dismiss.
+- **Non-intrusive by construction** — never appears over code that follows the cursor, while you are deleting, inside a string or a comment, or on a line you have just dismissed a suggestion on. Sized to the cursor: one line mid-expression, a statement on an empty line, a block only where a block was just opened.
+- **Snappy** — typing through a suggestion costs no round trip at all, and the wait before asking is set from the model's measured latency rather than a fixed guess.
+- **Knows the whole application** — every declaration and import in the project is read once in the background and kept, so a completion or a fix is written against the real signature of anything in the codebase.
 - **Context-aware generation** — every suggestion is built from the enclosing method signature, the parameters and locals in scope, the fields of the enclosing type, and the required return type.
 - **Reads the files your code depends on** — referenced types and functions are resolved to their real declarations, and those declarations are read out of the files they live in and sent with the request.
 - **Language-server grounded** — where a language server is installed (tsserver, Pylance, rust-analyzer, gopls, jdt.ls, clangd, OmniSharp, …), the model is told exactly which identifiers are legal at the cursor and what type each one has.
@@ -49,7 +55,7 @@ LLM Copilot brings ghost-text autocomplete, inline chat, code actions (explain /
 - **Auto-formatting** — suggestions are re-indented to match your file's tab/space style and surrounding blank-line rhythm.
 - **Inline chat** (`Ctrl/Cmd+I`) — ask for a change right in the editor.
 - **AI chat sidebar** — a full chat panel in the activity bar.
-- **Terminal & debug error assist** — a failed command or an exception in the debugger opens a pane of candidate fixes; pick one and the whole thing (output, the source it names, the approach chosen) moves into the chat.
+- **Terminal & debug error assist** — a failed command or an exception in the debugger opens a pane of candidate fixes, each carrying the file and line it edits and how sure the model is. Answers are written against the declarations, callers and manifest the project index resolved, not against guesses.
 - **Code actions on a selection** — Explain, Fix, Refactor, Generate doc comment, Generate unit tests.
 - **Scaffolding** — generate a constructor, getters/setters, interface/abstract-method implementations, or all class members.
 - **Commit message generation** — Conventional Commits format from your staged diff.
@@ -379,6 +385,59 @@ Just type. When you start a new line, a declaration keyword, or a fresh statemen
 - **Force a suggestion now:** `Ctrl/Cmd+Shift+Space` (**Trigger Inline Completion**)
 - Auto-triggering can be turned off with `llmCopilot.autoTrigger: false` (then use the manual shortcut).
 
+#### When it appears — and when it stays out of the way
+
+Ghost text is unasked-for text on the screen, in the middle of writing. What
+makes it tolerable is not how good the suggestions are, it is how reliably it
+refuses to appear where it would be in the way. Every refusal below is applied
+in one place, so the debounce timer and the completion provider always reach
+the same verdict:
+
+| It stays quiet when | Why |
+|---|---|
+| Real code follows the cursor on the line | Accepting would delete what you have already written. Whitespace and closing delimiters don't count — finishing an argument list from inside its own brackets is the normal case |
+| You are deleting, undoing or pasting | You are removing something; answering with more is the worst case for intrusiveness |
+| The cursor is inside a string or a comment | Code completion there is noise |
+| You just pressed `Esc` on this line | The single most irritating thing an inline completion can do is come straight back. The refusal is remembered until you have typed six more characters, rewritten the line, or thirty seconds have passed |
+| You have typed one character after a `.` | The editor's own completion list is instant, exact and already on screen. Raise or lower the threshold with `llmCopilot.ghostText.minIdentifierChars` |
+| Text is selected, or there is a second cursor | You are doing something else |
+
+And when it does appear, it is only as long as the cursor calls for:
+
+| Where the cursor is | How much you get | Setting |
+|---|---|---|
+| Mid-expression | One line — it finishes the expression and stops | — |
+| On an empty line in a body | A statement, or the two or three that clearly belong with it | `llmCopilot.ghostText.maxStatementLines` (3) |
+| On the line after an opening brace | The body of the block that was just opened | `llmCopilot.ghostText.maxBlockLines` (12) |
+
+The ceiling is both asked for in the prompt and enforced on the reply. A model
+that writes past it is cut back at the last line where the snippet is still
+balanced; if there is no such line inside the budget, the suggestion is dropped
+rather than shown half-finished. A block-sized answer is only ever allowed where
+a block was genuinely just opened — anywhere else it is demoted to a statement,
+because otherwise "suggest the next line" turns into "write the rest of the
+function".
+
+#### Snappiness
+
+Two things make it feel immediate rather than merely fast.
+
+**Typing through a suggestion costs nothing.** When you type the characters a
+suggestion was already proposing, the answer is the rest of that same
+suggestion, and it is given with no round trip at all. Without this, every
+keystroke through a suggestion re-asks the model — which both costs the latency
+and risks the answer changing under your hands mid-word.
+
+**The wait is measured, not guessed.** A fixed debounce is a guess at a number
+that depends entirely on the model behind it: a local model answering in 120 ms
+spends most of the latency you feel sitting in a 600 ms wait, while a hosted
+frontier model taking two seconds just burns requests on cursors you have
+already left. The wait now tracks the median round trip actually observed and
+slides between `llmCopilot.ghostText.minDebounceMs` (150) and
+`llmCopilot.debounceMs` (600). **LLM Copilot: Show Project Index Status** reports
+what it has measured and what it is currently waiting. Turn it off with
+`llmCopilot.ghostText.adaptiveDebounce: false` to go back to a fixed wait.
+
 #### What the model is told
 
 A completion request is not just the surrounding lines. Before asking the model
@@ -435,9 +494,16 @@ build:
    and `for (const auto& user : users)` are all read as the same thing: a loop
    over `users` binding `user`.
 
-5. **The contract to satisfy** — the return type the completion must produce,
-   the partial line it must continue without repeating, and any problems the
-   language server is already reporting nearby.
+5. **What the rest of the application contains** — the whole project is read
+   once in the background and reduced to a symbol table and an import graph,
+   so a completion can be given the *real* declaration of anything in the
+   codebase rather than a plausible-looking guess. See
+   [The project index](#the-project-index) below.
+
+6. **The contract to satisfy** — the return type the completion must produce,
+   the partial line it must continue without repeating, the number of lines it
+   may occupy, and any problems the language server is already reporting
+   nearby.
 
 Every one of these steps is time-boxed and fails soft: no language server, a
 server that is still indexing, or a slow project degrades the suggestion
@@ -541,7 +607,59 @@ Select code, then either press `Ctrl+Space` (**Show Selection Actions** — a me
 
 Right-clicking a selection also shows these under the editor context menu.
 
-### 5. Terminal & debug errors — `Ctrl+Alt+E`
+### 5. The project index
+
+Most of the context above is about the cursor: the function it is in, the
+types on the line, the block it sits inside. None of it can answer *"where is
+`OrderRepository` declared"*, *"who calls this"* or *"what is this project" —*
+and those are the questions a deep answer turns on. It is the difference
+between a fix that compiles and a fix that is right.
+
+So the whole workspace is read once and reduced to three things:
+
+- **A symbol table** — every class, interface, function, method, type and
+  constant, name to the file and *the declaration line itself*, so a lookup
+  returns something quotable rather than a path.
+- **An import graph, both ways** — forwards for what a file depends on,
+  backwards for what depends on it. The second is what "will this change break
+  anything" needs.
+- **A digest of the project's shape** — languages, top-level layout, manifests
+  and likely entry points, for the prompts that need orientation rather than
+  detail.
+
+Sixteen languages are read: TypeScript, JavaScript, TSX/JSX, Python, Java,
+Kotlin, Scala, C#, Rust, Go, Ruby, PHP, Swift, Dart, C and C++. It is regex
+over declaration lines, not a parser, deliberately — it has to cope with files
+that do not currently compile and with languages you have no tooling installed
+for, and it only ever needs the signature.
+
+**Cost.** A full read of a mid-sized repository takes a couple of seconds,
+which is unaffordable per keystroke and trivial once per session — so it runs
+in the background after the window opens and nothing waits for it. The result
+is written to disk keyed on each file's modification time and size, so a second
+session re-reads only what changed, which is normally nothing. Saving a file
+re-reads that one file; creating, deleting and renaming update the graph.
+
+**What it buys.** On the completion path it is a couple of map lookups, which
+is what makes cross-file context affordable on *every* keystroke instead of
+only on invoke — and once it is warm, the workspace-wide regex sweep that used
+to be the fallback is skipped entirely. On the error path it is the whole of
+"deep context" below.
+
+| Command | What it does |
+|---|---|
+| **LLM Copilot: Show Project Index Status** | Files and symbols held, how long the last build took, the project digest, and the measured ghost-text latency |
+| **LLM Copilot: Rebuild Project Index** | Re-reads everything, with progress. Only needed after the project changed outside the editor |
+
+| Setting | Default | |
+|---|---|---|
+| `llmCopilot.projectIndex.enabled` | `true` | Turn the whole thing off |
+| `llmCopilot.projectIndex.maxFiles` | `4000` | Raise it if the status report says the ceiling was reached |
+| `llmCopilot.projectIndex.maxFileSizeKb` | `256` | Generated bundles cost time and teach the model nothing |
+| `llmCopilot.projectIndex.exclude` | `[]` | Extra globs, on top of `node_modules`, build output and VCS directories |
+| `llmCopilot.projectIndex.completionBudgetChars` | `2400` | Characters of project context per completion; `0` leaves it on for errors only |
+
+### 6. Terminal & debug errors — `Ctrl+Alt+E`
 
 When a command fails in the terminal, or the debugger stops on an exception, the output is read for you: the exception and its message, the frames that name real files, and the source around the line that threw. What comes back is a short list of candidate fixes — one line each, most likely first — rather than one long answer that may have guessed the wrong cause.
 
@@ -551,15 +669,65 @@ When a command fails in the terminal, or the debugger stops on an exception, the
 
 **From anywhere.** `Ctrl+Alt+E` (`Ctrl+Cmd+E` on macOS) lists every failure captured so far, newest first, so an error that has already scrolled away is still reachable.
 
-Picking a fix opens the chat sidebar with the question already asked — the error, the resolved source, and the approach chosen — and the answer arrives with the edit in it. The conversation carries on from there like any other. The same pane also offers **Explain this error** (what it means, no fix yet), **Ask something about it…** (your own question, with everything attached), **Open the failing file** at the line, and **Copy the error text**.
+#### What the answer is written against
+
+The source at the failing line is the obvious context, and on its own it is
+rarely enough. `undefined is not a function` at `repo.findByCustomer(id)`
+cannot be answered from that line — the answer is in whatever `repo` is, what
+that type declares, and who constructed it. A model given only the failing line
+has to invent those, and it does: confidently, and wrongly.
+
+So before the first question is asked, the [project index](#the-project-index)
+is consulted and four more things go in with the error:
+
+1. **Where the names involved are declared.** Every identifier the message
+   printed, every symbol the trace's own frames named, and the identifiers on
+   the failing line and its neighbours are looked up, and the real declaration
+   of each is attached. The prompt says these are read from the project and
+   must be used in preference to anything inferred.
+2. **The callers of the failing file.** A fix that changes a signature has to
+   be a fix for them too, and the answer is asked to say whether it is.
+3. **What that file itself depends on.**
+4. **The project manifest** — `package.json`, `pyproject.toml`, `go.mod`,
+   `Cargo.toml`, `pom.xml` and the rest, trimmed to the fields that can
+   actually explain a failure. Half of all runtime failures are a dependency, a
+   version or a script.
+
+Turn it off with `llmCopilot.errorAssist.deepContext: false`, or change how
+much goes in with `llmCopilot.errorAssist.projectContextChars` (4000).
+
+#### The pane
+
+Each candidate fix carries **where it lands** — the file and line it edits,
+shown in the right-hand column — and **how sure the model is** (likely,
+possible, unlikely) rather than only an implicit ranking.
+
+Picking one opens the chat sidebar with the question already asked — the error,
+the resolved source, the project context and the approach chosen — and the
+answer arrives with the edit in it. The conversation carries on from there like
+any other. The pane also offers:
+
+- **Work it through properly** — the full diagnosis, which is the reasoning the
+  shortlist deliberately leaves out: what the runtime was doing, which of the
+  resolved declarations are actually involved, the cause with its evidence, the
+  change, and what else in the project the change affects. Where the evidence
+  does not settle it, the answer says which candidates it is between and what
+  one observation would tell them apart. The entry reports how much it has to
+  work with — *"against 11 resolved names and 3 callers"*.
+- **Explain this error** — what it means, no fix yet.
+- **Ask something about it…** — your own question, with everything attached.
+- **Open the failing file** at the line, plus **a jump to any other file a fix
+  named**. A cause that lives one file away from the throw is common, and
+  without this the pane makes you go and find it.
+- **Copy the error text.**
 
 A failure that happens while you are watching also raises a *Show solutions* notification. Turn that off with `llmCopilot.errorAssist.autoOffer`, or turn the whole feature off with `llmCopilot.errorAssist.enabled`.
 
-### 6. Documentation comments — `Ctrl/Cmd+Shift+D`
+### 7. Documentation comments — `Ctrl/Cmd+Shift+D`
 
 Place your cursor on (or just above) a function/class/method and run **Generate Doc Comment**. The comment is produced in the right style for the language (JSDoc, Javadoc, XML doc, Python docstring, Rustdoc, etc.) and shown as ghost text — `Tab` to accept.
 
-### 7. Class scaffolding
+### 8. Class scaffolding
 
 With the cursor inside a class/struct/interface, run any of:
 
@@ -570,15 +738,15 @@ With the cursor inside a class/struct/interface, run any of:
 
 The extension analyzes the surrounding structure (fields, existing members, unimplemented methods) and generates only what's missing.
 
-### 8. Generate unit tests — `Ctrl/Cmd+Shift+T`
+### 9. Generate unit tests — `Ctrl/Cmd+Shift+T`
 
 Select a function or class and run **Generate Unit Tests**. Set `llmCopilot.testFramework` (e.g. `jest`, `pytest`, `JUnit`) to pin a framework, or leave it blank to auto-detect.
 
-### 9. Commit messages — `Ctrl/Cmd+Shift+M`
+### 10. Commit messages — `Ctrl/Cmd+Shift+M`
 
 Stage your changes, then run **Generate Commit Message**. It reads your staged diff and writes a Conventional Commits message.
 
-### 10. Enable/disable & status
+### 11. Enable/disable & status
 
 - **`LLM Copilot: Toggle Enable/Disable`** turns completions on/off.
 - A status-bar item shows the current state (hide it with `llmCopilot.showStatusBar: false`).
@@ -611,6 +779,8 @@ Open the Command Palette (`Ctrl/Cmd+Shift+P`) and type "LLM Copilot":
 | `LLM Copilot: Explain Terminal Error` | Read the selected (or last failed) terminal output and offer fixes. |
 | `LLM Copilot: Explain Debug Error` | Read what the debugger stopped on and offer fixes. |
 | `LLM Copilot: Analyse a Recent Error` | Pick from every failure captured so far. |
+| `LLM Copilot: Rebuild Project Index` | Re-read every declaration and import in the project. |
+| `LLM Copilot: Show Project Index Status` | What the index holds, plus the measured ghost-text latency. |
 | `LLM Copilot: List Claude Code Models` | List models exposed by a Claude Code proxy. |
 | `LLM Copilot: Diagnose Claude Code Connection` | Probe Claude Code proxy ports/paths. |
 
@@ -672,6 +842,18 @@ All settings are under the `llmCopilot.` prefix.
 | `errorAssist.solutionCount` | number | `4` | How many candidate fixes the pane lists (2–8). |
 | `errorAssist.contextLines` | number | `40` | Lines of source read around each failing line and sent with the error (10–200). |
 | `errorAssist.maxOutputLines` | number | `120` | Most lines of captured output kept from a failed command or session (20–500). |
+| `errorAssist.deepContext` | boolean | `true` | Send the error together with what the rest of the project says about it: where the names involved are declared, what imports the failing file, and the project manifest. |
+| `errorAssist.projectContextChars` | number | `4000` | Characters of that project context sent with an error (0–40000). |
+| `ghostText.adaptiveDebounce` | boolean | `true` | Set the wait before asking from the model's measured latency rather than a fixed guess. It slides between `ghostText.minDebounceMs` and `debounceMs`. |
+| `ghostText.minDebounceMs` | number | `150` | Shortest wait the adaptive debounce will settle on (0–2000 ms). `debounceMs` remains the longest. |
+| `ghostText.maxStatementLines` | number | `3` | Most lines a statement-sized suggestion may occupy (1–40). Longer replies are cut back to the last balanced line. |
+| `ghostText.maxBlockLines` | number | `12` | Most lines a block-sized suggestion may occupy (1–80) — the body of a block that was just opened. |
+| `ghostText.minIdentifierChars` | number | `2` | How much of an identifier must be typed before ghost text is offered (0–8). Below it, the editor's own completion list is the better answer. |
+| `projectIndex.enabled` | boolean | `true` | Read every declaration and import in the project, in the background, so completions and error answers can use the real signatures from anywhere in the codebase. |
+| `projectIndex.maxFiles` | number | `4000` | Most source files the index will hold (100–50000). |
+| `projectIndex.maxFileSizeKb` | number | `256` | Files larger than this are skipped (16–4096 KB). |
+| `projectIndex.exclude` | string[] | `[]` | Extra globs to keep out, on top of `node_modules`, build output and VCS directories. |
+| `projectIndex.completionBudgetChars` | number | `2400` | Characters of project context sent with each completion (0–20000). `0` leaves it on for errors only. |
 
 **Example `settings.json`:**
 
@@ -692,6 +874,15 @@ All settings are under the `llmCopilot.` prefix.
   "llmCopilot.semanticBudgetMs": 600,
   "llmCopilot.semanticMaxDeclarations": 4,
   "llmCopilot.prefetchContext": true,
+
+  // How ghost text behaves
+  "llmCopilot.ghostText.adaptiveDebounce": true,
+  "llmCopilot.ghostText.maxStatementLines": 3,
+  "llmCopilot.ghostText.maxBlockLines": 12,
+
+  // Know the whole application
+  "llmCopilot.projectIndex.enabled": true,
+  "llmCopilot.errorAssist.deepContext": true,
 
   // Let the language's own parser vet each suggestion
   "llmCopilot.validateWithInterpreter": true

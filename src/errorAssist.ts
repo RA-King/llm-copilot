@@ -19,9 +19,10 @@ import { CapturedError, ErrorCaptureService } from './errorCapture';
 import { ParsedError, StackFrame, describeError, parseError, rankFrames } from './errorParser';
 import {
   ChatMessage, ErrorContext, chat,
-  buildErrorExplainPrompt, buildErrorQuestionPrompt,
+  buildErrorDiagnosisPrompt, buildErrorExplainPrompt, buildErrorQuestionPrompt,
   buildErrorSolutionsPrompt, buildErrorWalkthroughPrompt,
 } from './llmProvider';
+import { DeepContext, EMPTY_DEEP_CONTEXT, ResolvedFrame, gatherDeepContext } from './deepContext';
 
 // ─── Solutions ────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,12 @@ export interface ErrorSolution {
   title: string;
   /** The reasoning under it — cause, and the change proposed. */
   detail: string;
+  /** The file the fix edits, as the model named it; '' when it named none. */
+  file?: string;
+  /** The line within that file, one-based; 0 when unstated. */
+  line?: number;
+  /** How sure the model said it was. */
+  confidence?: 'likely' | 'possible' | 'unlikely';
 }
 
 /** `1.` / `2)` / `- ` / `* ` / `Fix 3:` — every way a model numbers a list. */
@@ -63,7 +70,7 @@ export function parseSolutions(raw: string, limit = 6): ErrorSolution[] {
     const heading = /^\*\*(.+?)\*\*:?$/.exec(text) ?? /^#+\s+(.+)$/.exec(text);
     const started = heading ?? ITEM_START.exec(text);
     if (started) {
-      current = { title: cleanTitle(started[1]), detail: '' };
+      current = readTarget(cleanTitle(started[1]));
       if (current.title) { solutions.push(current); }
       continue;
     }
@@ -84,6 +91,37 @@ export function parseSolutions(raw: string, limit = 6): ErrorSolution[] {
   }
 
   return solutions.filter(s => s.title).slice(0, limit);
+}
+
+/**
+ * Pull the `[file:line]` and `(likely)` the solutions prompt asks for out of a
+ * title, leaving the title itself readable.
+ *
+ * Both are optional and both are hints. A model that ignores the format loses
+ * the jump-to-the-edit entry in the pane and nothing else, which is why they
+ * are parsed off the title rather than demanded as structured output.
+ */
+export function readTarget(rawTitle: string): ErrorSolution {
+  let title = rawTitle;
+  let file = '';
+  let line = 0;
+  let confidence: ErrorSolution['confidence'];
+
+  const located = /\[([^\]\s]+?)(?::(\d+))?\]/.exec(title);
+  if (located && /[./\\]/.test(located[1])) {
+    file = located[1];
+    line = located[2] ? parseInt(located[2], 10) : 0;
+    title = title.replace(located[0], '').trim();
+  }
+
+  const sureness = /\((likely|possible|unlikely)\)/i.exec(title);
+  if (sureness) {
+    confidence = sureness[1].toLowerCase() as ErrorSolution['confidence'];
+    title = title.replace(sureness[0], '').trim();
+  }
+
+  title = title.replace(/[\s—–-]+$/, '').trim();
+  return { title, detail: '', file, line, confidence };
 }
 
 // ─── Resolved source ──────────────────────────────────────────────────────────
@@ -190,8 +228,24 @@ export class ErrorAssistant {
       return;
     }
 
+    this.statusBar.setLoading('Resolving the files the trace names…');
     const frames = await this.gatherContext(parsed);
-    const context = toErrorContext(captured, parsed, frames);
+
+    // What the rest of the project says about the names in this failure. It is
+    // the difference between a fix written against the real signatures and one
+    // written against plausible ones, so it is gathered before the first ask
+    // rather than only when the user drills in.
+    let deep: DeepContext = EMPTY_DEEP_CONTEXT;
+    if (setting('errorAssist.deepContext', true)) {
+      this.statusBar.setLoading('Reading the project around it…');
+      deep = await gatherDeepContext(parsed, frames.map(toResolvedFrame), {
+        budgetChars: setting('errorAssist.projectContextChars', 4000),
+        includeManifest: true,
+        includeDependents: true,
+      }).catch(() => EMPTY_DEEP_CONTEXT);
+    }
+
+    const context = toErrorContext(captured, parsed, frames, deep);
 
     let solutions: ErrorSolution[] = [];
     this.statusBar.setLoading('Reading the error…');
@@ -206,17 +260,18 @@ export class ErrorAssistant {
       return;
     }
 
-    await this.showPane(parsed, context, frames, solutions);
+    await this.showPane(parsed, context, frames, solutions, deep);
   }
 
   private async showPane(
     parsed: ParsedError,
     context: ErrorContext,
     frames: FrameContext[],
-    solutions: ErrorSolution[]
+    solutions: ErrorSolution[],
+    deep: DeepContext
   ): Promise<void> {
     interface PaneItem extends vscode.QuickPickItem {
-      id: 'solution' | 'explain' | 'ask' | 'open' | 'copy';
+      id: 'solution' | 'diagnose' | 'explain' | 'ask' | 'open' | 'goto' | 'copy';
       solution?: ErrorSolution;
     }
     type PaneEntry = PaneItem | (vscode.QuickPickItem & { id?: undefined });
@@ -225,7 +280,9 @@ export class ErrorAssistant {
       id: 'solution',
       solution,
       label: `$(lightbulb) ${solution.title}`,
-      description: index === 0 ? 'most likely' : undefined,
+      // The site of the edit is more use here than a ranking the user can see
+      // for themselves from the order.
+      description: describeSolution(solution, index),
       detail: solution.detail || undefined,
     }));
 
@@ -233,6 +290,14 @@ export class ErrorAssistant {
       items.push({ label: 'Or', kind: vscode.QuickPickItemKind.Separator });
     }
 
+    items.push({
+      id: 'diagnose',
+      label: '$(microscope) Work it through properly',
+      detail: deep.text
+        ? `Full diagnosis against ${deep.resolvedNames.length} resolved name${deep.resolvedNames.length === 1 ? '' : 's'}` +
+          (deep.dependents.length ? ` and ${deep.dependents.length} caller${deep.dependents.length === 1 ? '' : 's'}` : '')
+        : 'Full diagnosis: the sequence, the cause, the change, the fallout',
+    });
     items.push({
       id: 'explain',
       label: '$(comment-discussion) Explain this error',
@@ -254,6 +319,16 @@ export class ErrorAssistant {
       });
     }
 
+    // Anywhere else the answer named, reachable without leaving the pane.
+    for (const target of namedTargets(solutions, top)) {
+      items.push({
+        id: 'goto',
+        solution: target,
+        label: `$(go-to-file) Open ${target.file}${target.line ? ':' + target.line : ''}`,
+        detail: 'Named by one of the fixes above',
+      });
+    }
+
     items.push({ id: 'copy', label: '$(clippy) Copy the error text' });
 
     const picked = await vscode.window.showQuickPick(items, {
@@ -268,6 +343,13 @@ export class ErrorAssistant {
         await this.chatProvider.ask(
           this.seedText(context, `**Fix to try:** ${picked.solution!.title}`),
           buildErrorWalkthroughPrompt(context, picked.solution!)
+        );
+        break;
+
+      case 'diagnose':
+        await this.chatProvider.ask(
+          this.seedText(context, 'Work this through properly — cause, change, and what else it touches.'),
+          buildErrorDiagnosisPrompt(context)
         );
         break;
 
@@ -294,20 +376,43 @@ export class ErrorAssistant {
 
       case 'open':
         if (top) {
-          const doc = await vscode.workspace.openTextDocument(top.uri);
-          const editor = await vscode.window.showTextDocument(doc);
-          const line = Math.max(0, (top.frame.line ?? 1) - 1);
-          const at = new vscode.Position(line, Math.max(0, (top.frame.column ?? 1) - 1));
-          editor.selection = new vscode.Selection(at, at);
-          editor.revealRange(new vscode.Range(at, at), vscode.TextEditorRevealType.InCenter);
+          await reveal(top.uri, (top.frame.line ?? 1) - 1, (top.frame.column ?? 1) - 1);
         }
         break;
+
+      case 'goto': {
+        const target = picked.solution;
+        if (!target?.file) { return; }
+        const uri = await this.resolveNamedFile(target.file);
+        if (!uri) {
+          vscode.window.showWarningMessage(`LLM Copilot: could not find ${target.file} in the workspace.`);
+          return;
+        }
+        await reveal(uri, Math.max(0, (target.line ?? 1) - 1), 0);
+        break;
+      }
 
       case 'copy':
         await vscode.env.clipboard.writeText(context.errorText);
         vscode.window.showInformationMessage('LLM Copilot: error text copied.');
         break;
     }
+  }
+
+  /** A path the answer named, turned back into a file that exists. */
+  private async resolveNamedFile(named: string): Promise<vscode.Uri | undefined> {
+    const cleaned = named.replace(/^\.\//, '').replace(/\\/g, '/');
+
+    if (path.isAbsolute(cleaned)) { return await exists(vscode.Uri.file(cleaned)); }
+
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const candidate = await exists(vscode.Uri.joinPath(folder.uri, cleaned));
+      if (candidate) { return candidate; }
+    }
+
+    const matches = await vscode.workspace.findFiles(
+      `**/${path.basename(cleaned)}`, '**/{node_modules,out,dist,build,target,.git}/**', 8);
+    return matches.find(uri => uri.path.endsWith(cleaned)) ?? matches[0];
   }
 
   /** Nothing recognisable in the output — hand it to the chat as it stands. */
@@ -412,6 +517,63 @@ export class ErrorAssistant {
   }
 }
 
+/** Open a file at a position and put it in the middle of the screen. */
+async function reveal(uri: vscode.Uri, line: number, column: number): Promise<void> {
+  const doc = await vscode.workspace.openTextDocument(uri);
+  const editor = await vscode.window.showTextDocument(doc);
+  const at = new vscode.Position(
+    Math.max(0, Math.min(line, doc.lineCount - 1)), Math.max(0, column));
+  editor.selection = new vscode.Selection(at, at);
+  editor.revealRange(new vscode.Range(at, at), vscode.TextEditorRevealType.InCenter);
+}
+
+/** The pane's right-hand column: where the fix lands, and how sure it is. */
+function describeSolution(solution: ErrorSolution, index: number): string | undefined {
+  const parts: string[] = [];
+  if (solution.file) {
+    parts.push(`${path.basename(solution.file)}${solution.line ? ':' + solution.line : ''}`);
+  }
+  if (solution.confidence) { parts.push(solution.confidence); }
+  else if (index === 0) { parts.push('most likely'); }
+  return parts.length ? parts.join(' · ') : undefined;
+}
+
+/**
+ * Files the candidate fixes named that are not the one the trace already
+ * pointed at. A cause that lives one file away from the throw is common, and
+ * without this the pane makes the user go and find it.
+ */
+function namedTargets(
+  solutions: ErrorSolution[], top: FrameContext | undefined
+): ErrorSolution[] {
+  const already = top ? vscode.workspace.asRelativePath(top.uri, false).replace(/\\/g, '/') : '';
+  const seen = new Set<string>();
+  const out: ErrorSolution[] = [];
+
+  for (const solution of solutions) {
+    if (!solution.file) { continue; }
+    const key = `${solution.file}:${solution.line ?? 0}`;
+    if (seen.has(key)) { continue; }
+    if (already && (already.endsWith(solution.file) || solution.file.endsWith(already))) { continue; }
+    seen.add(key);
+    out.push(solution);
+    if (out.length >= 3) { break; }
+  }
+
+  return out;
+}
+
+/** What `deepContext` needs from a frame this module already resolved. */
+function toResolvedFrame(frame: FrameContext): ResolvedFrame {
+  return {
+    uri: frame.uri,
+    languageId: frame.languageId,
+    startLine: frame.startLine,
+    snippet: frame.snippet,
+    tracedLine: frame.frame.line ?? 0,
+  };
+}
+
 async function exists(uri: vscode.Uri): Promise<vscode.Uri | undefined> {
   try {
     const stat = await vscode.workspace.fs.stat(uri);
@@ -424,7 +586,8 @@ async function exists(uri: vscode.Uri): Promise<vscode.Uri | undefined> {
 // ─── Prompt context ───────────────────────────────────────────────────────────
 
 function toErrorContext(
-  captured: CapturedError, parsed: ParsedError, frames: FrameContext[]
+  captured: CapturedError, parsed: ParsedError, frames: FrameContext[],
+  deep: DeepContext = EMPTY_DEEP_CONTEXT
 ): ErrorContext {
   const codeContext = frames
     .map(f => {
@@ -441,5 +604,6 @@ function toErrorContext(
     headline: parsed.headline,
     errorText: parsed.text,
     codeContext,
+    projectContext: deep.text || undefined,
   };
 }

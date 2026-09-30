@@ -1,4 +1,4 @@
-import { parseSolutions } from '../src/errorAssist';
+import { parseSolutions, readTarget } from '../src/errorAssist';
 
 describe('parseSolutions', () => {
   it('reads the numbered list the prompt asks for', () => {
@@ -14,10 +14,12 @@ describe('parseSolutions', () => {
       {
         title: 'Guard the basket before totalling',
         detail: 'basket is undefined when the cart is empty, so .items throws. Return 0 early when there is nothing in it.',
+        file: '', line: 0, confidence: undefined,
       },
       {
         title: 'Load the basket before calling total',
         detail: 'The fetch on line 30 is not awaited, so total runs on a promise.',
+        file: '', line: 0, confidence: undefined,
       },
     ]);
   });
@@ -73,5 +75,48 @@ describe('parseSolutions', () => {
   it('returns nothing for a reply with no list in it', () => {
     expect(parseSolutions('')).toEqual([]);
     expect(parseSolutions('I could not work out what went wrong.')).toEqual([]);
+  });
+
+  it('carries the file and line a fix names through to the pane', () => {
+    const reply = [
+      '1. Await the basket fetch [src/cart/total.ts:30] (likely)',
+      '   The call returns a promise.',
+      '2. Widen the type [src/cart/types.ts] (possible)',
+    ].join('\n');
+
+    const [first, second] = parseSolutions(reply);
+    expect(first.title).toBe('Await the basket fetch');
+    expect(first.file).toBe('src/cart/total.ts');
+    expect(first.line).toBe(30);
+    expect(first.confidence).toBe('likely');
+
+    expect(second.file).toBe('src/cart/types.ts');
+    expect(second.line).toBe(0);
+    expect(second.confidence).toBe('possible');
+  });
+});
+
+describe('readTarget', () => {
+  it('leaves a plain title alone', () => {
+    expect(readTarget('Await the fetch')).toEqual({
+      title: 'Await the fetch', detail: '', file: '', line: 0, confidence: undefined,
+    });
+  });
+
+  it('ignores brackets that are not a path', () => {
+    const read = readTarget('Handle the [empty] case');
+    expect(read.title).toBe('Handle the [empty] case');
+    expect(read.file).toBe('');
+  });
+
+  it('takes the confidence without a location', () => {
+    const read = readTarget('Rebuild the native module (unlikely)');
+    expect(read.title).toBe('Rebuild the native module');
+    expect(read.confidence).toBe('unlikely');
+  });
+
+  it('strips the separator a model leaves behind', () => {
+    expect(readTarget('Pin the dependency — [package.json:12]').title)
+      .toBe('Pin the dependency');
   });
 });

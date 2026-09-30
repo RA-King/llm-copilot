@@ -12,6 +12,8 @@ export interface CompletionRequest {
   keywordHint?: string;
   /** Relevant signatures from other workspace files */
   workspaceContext?: string;
+  /** Declarations and related files drawn from the whole-project index */
+  projectContext?: string;
   /** Rendered enclosing signature / bindings in scope (signatureExtractor) */
   surroundingContext?: string;
   /** Rendered language-server facts: resolved types, in-scope symbols, real
@@ -26,6 +28,9 @@ export interface CompletionRequest {
   /** Ceiling on the reply length for this cursor, when it should be tighter
    *  than the configured maximum (finishing an expression, say). */
   tokenBudget?: number;
+  /** Lines the suggestion may occupy. Enforced after the reply as well, but
+   *  stating it up front is what usually keeps the reply short. */
+  maxLines?: number;
 }
 
 export interface ChatMessage { role: 'user' | 'assistant' | 'system'; content: string; }
@@ -518,6 +523,13 @@ Declaration: ${s.containerSignature}`;
   // ── Layered context, most authoritative last ─────────────────────────────
   const sections: string[] = [];
 
+  if (req.projectContext) {
+    sections.push(
+      `── Read from this project's own source (real declarations, not guesses) ──\n` +
+      req.projectContext
+    );
+  }
+
   if (req.workspaceContext) {
     sections.push(req.workspaceContext);
   }
@@ -551,6 +563,16 @@ Declaration: ${s.containerSignature}`;
   }
   if (req.keywordHint) {
     contract.push(`The user just typed the keyword \`${req.keywordHint}\`; complete that construct.`);
+  }
+  if (req.maxLines) {
+    // Ghost text is read at a glance, mid-thought. A reply that runs past what
+    // the author was about to write is not a better suggestion, it is one they
+    // now have to read before they can dismiss it.
+    contract.push(
+      req.maxLines === 1
+        ? 'Reply with a single line. Finish the current expression and stop.'
+        : `Reply with at most ${req.maxLines} lines, and stop at the end of the thought the author started — do not write the rest of the function.`
+    );
   }
 
   const contextBlock = sections.length ? `\n${sections.join('\n\n')}\n` : '';
@@ -685,6 +707,12 @@ export interface ErrorContext {
   errorText: string;
   /** Source around the failing lines, fenced and labelled; '' when none resolved. */
   codeContext: string;
+  /**
+   * What the rest of the project says about the names in this failure —
+   * where they are declared, what imports the failing file, what the project
+   * itself is. Empty when the index has not been built. See `deepContext.ts`.
+   */
+  projectContext?: string;
 }
 
 function describeFailure(ctx: ErrorContext): string {
@@ -696,7 +724,11 @@ function describeFailure(ctx: ErrorContext): string {
     ? `\n\nThe source at the frames named above:\n${ctx.codeContext}`
     : '\n\nNo file from the trace could be resolved in the workspace, so reason from the output alone.';
 
-  return `${where}\nRuntime: ${ctx.runtime}\n\nOutput:\n\`\`\`text\n${ctx.errorText}\n\`\`\`${code}`;
+  const project = ctx.projectContext
+    ? `\n\n${ctx.projectContext}`
+    : '';
+
+  return `${where}\nRuntime: ${ctx.runtime}\n\nOutput:\n\`\`\`text\n${ctx.errorText}\n\`\`\`${code}${project}`;
 }
 
 /**
@@ -710,13 +742,42 @@ export function buildErrorSolutionsPrompt(ctx: ErrorContext, count: number): Cha
     {
       role: 'system',
       content:
-        `You are an expert debugging assistant. Given a failure and the code around it, propose exactly ${count} ` +
-        'distinct candidate fixes, most likely first. Each must address a different possible cause.\n\n' +
+        `You are an expert debugging assistant. Given a failure, the code around it and what the rest ` +
+        `of the project says about the names involved, propose exactly ${count} distinct candidate ` +
+        'fixes, most likely first. Each must address a different possible cause.\n\n' +
         'Format each one as:\n' +
-        '1. Short imperative title, under ten words\n' +
+        '1. Short imperative title, under ten words [path/to/file.ext:42] (likely)\n' +
         '   One or two sentences: the cause you are proposing, and the change that fixes it.\n\n' +
-        'Name real identifiers, files and line numbers from the material you were given. ' +
+        'The bracketed location is the single file and line the fix edits, written exactly as the ' +
+        'material names it; leave the brackets out when no one line is the site of the change. ' +
+        'The parenthesised word is your confidence: likely, possible or unlikely.\n\n' +
+        'Name real identifiers, files and line numbers from the material you were given, and use the ' +
+        'declarations you were shown rather than inventing signatures. ' +
         'No preamble, no closing summary, no code fences.',
+    },
+    { role: 'user', content: describeFailure(ctx) },
+  ];
+}
+
+/**
+ * The full diagnosis, for when the shortlist has not settled it. Asks for the
+ * reasoning the shortlist deliberately leaves out — the sequence that produced
+ * the failure, what the project context rules in and out, and what to check.
+ */
+export function buildErrorDiagnosisPrompt(ctx: ErrorContext): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You are an expert debugging assistant with the failing code and the surrounding project in ' +
+        'front of you. Work the problem through:\n' +
+        '1. What the runtime was doing when it failed, read off the trace.\n' +
+        '2. Which of the declarations you were shown are actually involved, and what they guarantee.\n' +
+        '3. The cause, stated plainly, with the evidence for it.\n' +
+        '4. The change — a fenced code block, smallest edit that fixes it.\n' +
+        '5. What else in the project the change affects, using the list of callers you were given.\n\n' +
+        'If the evidence does not settle the cause, say which of the candidates it is between and what ' +
+        'single observation would distinguish them. Do not pad, and do not restate the error.',
     },
     { role: 'user', content: describeFailure(ctx) },
   ];
@@ -732,8 +793,9 @@ export function buildErrorWalkthroughPrompt(
       content:
         'You are an expert debugging assistant working inside the editor. State the cause in a sentence or ' +
         'two, then give the exact change as a code block fenced with the language name. Keep it to the ' +
-        'smallest edit that fixes the failure, and say what to check next if the cause cannot be confirmed ' +
-        'from what you were shown.',
+        'smallest edit that fixes the failure. Use the declarations you were shown rather than inventing ' +
+        'signatures, and where a list of callers was given, say whether the change holds for them too. ' +
+        'Say what to check next if the cause cannot be confirmed from what you were shown.',
     },
     {
       role: 'user',

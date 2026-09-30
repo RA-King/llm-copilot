@@ -60,6 +60,9 @@ function fakeDoc(text = SRC, uri = 'file:///a.ts') {
 const OPTS = {
   semanticEnabled: true, semanticBudgetMs: 600,
   maxSymbols: 30, maxDeclarations: 4, workspaceBudgetMs: 700,
+  // No index in these tests: the properties being asserted are about the
+  // gather overlapping the debounce, which the index short-circuits.
+  projectEnabled: false, projectBudgetChars: 0,
 };
 
 beforeEach(() => {
