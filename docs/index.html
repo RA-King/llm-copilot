@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Copilot — inline AI completions for VS Code and IntelliJ, on any model</title>
+<meta name="description" content="Ghost-text completions, inline chat, error assist and code actions for VS Code and IntelliJ IDEA, powered by any LLM — local with Ollama or LM Studio, or hosted.">
+<meta property="og:title" content="LLM Copilot">
+<meta property="og:description" content="Copilot-style completions for VS Code and IntelliJ, on the model of your choice.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top"><img src="icon.svg" alt="" width="28" height="28"> LLM Copilot</a>
+    <nav class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#providers">Providers</a>
+      <a href="#guide">Guide</a>
+      <a href="#shortcuts">Shortcuts</a>
+    </nav>
+    <div class="nav-end">
+      <button class="icon-btn" id="theme" aria-label="Toggle colour theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <a class="icon-btn" href="https://github.com/RA-King/llm-copilot" aria-label="GitHub">
+        <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <div class="glow"></div>
+  <div class="wrap hero-grid">
+    <div>
+      <span class="pill">v0.0.5 · VS Code &nbsp;|&nbsp; v0.0.05 · IntelliJ</span>
+      <h1>Copilot-style completions.<br><span class="grad">Your model. Your machine.</span></h1>
+      <p class="lead">Ghost text, inline chat, error assist and code actions for <strong>VS Code</strong> and <strong>IntelliJ IDEA</strong> — running on Ollama or LM Studio for free, or on OpenAI, Anthropic, Gemini, DeepSeek, Mistral and more.</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/RA-King/llm-copilot/releases/latest">Get it for VS Code</a>
+        <a class="btn" href="https://github.com/RA-King/llm-copilot-intellij/releases/latest">Get it for IntelliJ</a>
+      </div>
+      <p class="fine">MIT licensed · 13 providers · 16 languages indexed</p>
+    </div>
+
+    <figure class="window hero-shot" aria-label="Ghost text completion in the editor">
+      <div class="titlebar"><i></i><i></i><i></i><span>orders.ts — my-shop</span></div>
+      <div class="editor">
+        <pre class="code" id="demo"><span class="ln">1</span><span class="k">import</span> { OrderRepository } <span class="k">from</span> <span class="s">'./repo'</span>;
+<span class="ln">2</span>
+<span class="ln">3</span><span class="k">export async function</span> <span class="f">fetchUserOrders</span>(repo: OrderRepository, userId: <span class="t">string</span>) {
+<span class="ln">4</span>  <span class="k">const</span> result: Order[] = [];
+<span class="ln">5</span>  <span class="k">for</span> (<span class="k">const</span> order <span class="k">of</span> <span class="k">await</span> repo.<span class="f">findByCustomer</span>(userId)) {
+<span class="ln">6</span>    <span id="typed"></span><span class="caret"></span><span class="ghost" id="ghost"></span>
+<span class="ln">7</span>  }
+<span class="ln">8</span>  <span class="ghost" id="ghost2"></span>
+<span class="ln">9</span>}</pre>
+        <div class="hint" id="hint"><kbd>Tab</kbd> accept <kbd>Esc</kbd> dismiss</div>
+      </div>
+      <div class="statusbar"><span>● LLM Copilot · ollama / codellama</span><span>TypeScript</span></div>
+    </figure>
+  </div>
+</section>
+
+<section class="logos wrap">
+  <span>Works with</span>
+  <ul>
+    <li>Ollama</li><li>LM Studio</li><li>OpenAI</li><li>Anthropic</li><li>Gemini</li><li>DeepSeek</li><li>Grok</li><li>Mistral</li><li>Groq</li><li>OpenRouter</li><li>Azure</li><li>Claude Code</li><li>Any OpenAI-compatible</li>
+  </ul>
+</section>
+
+<section id="features" class="section wrap">
+  <h2>Everything you expect from an AI pair, nothing you don't</h2>
+  <p class="sub">Both plugins share the same engine design, the same settings and the same shortcuts.</p>
+  <div class="grid">
+    <article class="card">
+      <div class="badge">⌁</div>
+      <h3>Ghost-text completions</h3>
+      <p>Suggestions as you type, sized to the cursor: one line mid-expression, a statement on a blank line, a whole body after an opening brace.</p>
+    </article>
+    <article class="card">
+      <div class="badge">⊘</div>
+      <h3>Stays out of the way</h3>
+      <p>Never over code after the cursor, while you delete, inside strings or comments, or straight after you press <kbd>Esc</kbd>.</p>
+    </article>
+    <article class="card">
+      <div class="badge">⚡</div>
+      <h3>Snappy by design</h3>
+      <p>Typing through a suggestion costs no round trip, and the debounce adapts to your model's measured latency.</p>
+    </article>
+    <article class="card">
+      <div class="badge">◎</div>
+      <h3>Knows the whole project</h3>
+      <p>A background index of every declaration and import, so completions use real signatures — not plausible guesses.</p>
+    </article>
+    <article class="card">
+      <div class="badge">!</div>
+      <h3>Error assist</h3>
+      <p>Failed terminal commands and debugger exceptions become a short list of fixes, each with its file, line and confidence.</p>
+    </article>
+    <article class="card">
+      <div class="badge">✎</div>
+      <h3>Chat &amp; code actions</h3>
+      <p>Inline chat, a chat sidebar, and one-shot explain, fix, refactor, doc comment, unit tests and commit messages.</p>
+    </article>
+    <article class="card">
+      <div class="badge">{}</div>
+      <h3>Class scaffolding</h3>
+      <p>Constructors, getters &amp; setters, interface and abstract-method stubs — only what's actually missing.</p>
+    </article>
+    <article class="card">
+      <div class="badge">≠</div>
+      <h3>Duplication guard</h3>
+      <p>Echoed prefixes, repeated lines and blocks that already exist are filtered before you ever see them.</p>
+    </article>
+    <article class="card">
+      <div class="badge">⌂</div>
+      <h3>Local &amp; free</h3>
+      <p>The default is Ollama on <code>localhost</code>. No account, no key, no code leaving your machine.</p>
+    </article>
+  </div>
+</section>
+
+<section id="install" class="section alt">
+  <div class="wrap">
+    <h2>Install in a minute</h2>
+    <p class="sub">Pick your IDE. Prebuilt packages are attached to every GitHub release.</p>
+
+    <div class="tabs" data-tabs="ide">
+      <button class="tab active" data-tab="vscode">VS Code</button>
+      <button class="tab" data-tab="intellij">IntelliJ IDEA</button>
+    </div>
+
+    <div class="panel active" data-panel="ide:vscode">
+      <ol class="steps">
+        <li>
+          <h4>Download the <code>.vsix</code></h4>
+          <p>Grab <code>llm-copilot-0.0.5.vsix</code> from the <a href="https://github.com/RA-King/llm-copilot/releases/latest">latest release</a>. Requires VS Code 1.74+.</p>
+        </li>
+        <li>
+          <h4>Install it</h4>
+          <p>Extensions view → <b>···</b> → <b>Install from VSIX…</b>, or from a terminal:</p>
+          <div class="snippet"><button class="copy">Copy</button><pre><code>code --install-extension llm-copilot-0.0.5.vsix</code></pre></div>
+        </li>
+        <li>
+          <h4>Choose a model</h4>
+          <p><kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> → <b>LLM Copilot: Open Settings</b>, then <b>LLM Copilot: Test Connection</b>.</p>
+        </li>
+      </ol>
+      <details class="more">
+        <summary>Build from source instead</summary>
+        <div class="snippet"><button class="copy">Copy</button><pre><code>git clone https://github.com/RA-King/llm-copilot.git
+cd llm-copilot
+npm install
+npm run compile        # then press F5 for a development window
+npm run package        # or build an installable .vsix (needs @vscode/vsce)</code></pre></div>
+      </details>
+    </div>
+
+    <div class="panel" data-panel="ide:intellij">
+      <ol class="steps">
+        <li>
+          <h4>Download the ZIP</h4>
+          <p>Grab <code>llm-copilot-intellij-0.0.05.zip</code> from the <a href="https://github.com/RA-King/llm-copilot-intellij/releases/latest">latest release</a>. Requires IntelliJ IDEA 2026.1+ (Community or Ultimate).</p>
+        </li>
+        <li>
+          <h4>Install from disk</h4>
+          <p><b>Settings → Plugins → ⚙ → Install Plugin from Disk…</b>, pick the ZIP, restart the IDE.</p>
+        </li>
+        <li>
+          <h4>Choose a model</h4>
+          <p><b>Settings → Tools → LLM Copilot</b>, then run <b>LLM Copilot: Test Connection</b>.</p>
+        </li>
+      </ol>
+      <details class="more">
+        <summary>Build from source instead</summary>
+        <div class="snippet"><button class="copy">Copy</button><pre><code>git clone https://github.com/RA-King/llm-copilot-intellij
+cd llm-copilot-intellij
+chmod +x gradlew
+./gradlew buildPlugin
+# → build/distributions/llm-copilot-intellij-0.0.05.zip</code></pre></div>
+        <p class="note">The build compiles against your local IntelliJ install and runs Gradle on a JDK 21 it finds for you — your system JDK is left alone.</p>
+      </details>
+    </div>
+
+    <div class="callout">
+      <strong>Zero-cost path.</strong> Install <a href="https://ollama.com">Ollama</a> and pull a model — the default settings in both plugins already point at it.
+      <div class="snippet"><button class="copy">Copy</button><pre><code>ollama pull codellama
+ollama serve</code></pre></div>
+    </div>
+  </div>
+</section>
+
+<section id="providers" class="section wrap">
+  <h2>Bring any model</h2>
+  <p class="sub">Select a provider to see its configuration. VS Code uses <code>settings.json</code>; in IntelliJ the same fields live under <b>Settings → Tools → LLM Copilot</b>.</p>
+
+  <div class="provider-layout">
+    <div class="provider-list" role="tablist">
+      <button class="prov active" data-p="ollama">Ollama <em>local</em></button>
+      <button class="prov" data-p="lmstudio">LM Studio <em>local</em></button>
+      <button class="prov" data-p="openai">OpenAI</button>
+      <button class="prov" data-p="anthropic">Anthropic</button>
+      <button class="prov" data-p="gemini">Google Gemini</button>
+      <button class="prov" data-p="deepseek">DeepSeek</button>
+      <button class="prov" data-p="grok">xAI Grok</button>
+      <button class="prov" data-p="mistral">Mistral</button>
+      <button class="prov" data-p="groq">Groq</button>
+      <button class="prov" data-p="openrouter">OpenRouter</button>
+      <button class="prov" data-p="azure">Azure OpenAI</button>
+      <button class="prov" data-p="claudecode">Claude Code <em>proxy</em></button>
+      <button class="prov" data-p="custom">Custom</button>
+    </div>
+    <div class="provider-detail">
+      <p id="prov-note"></p>
+      <div class="snippet"><span class="lang">settings.json</span><button class="copy">Copy</button><pre><code id="prov-code"></code></pre></div>
+    </div>
+  </div>
+</section>
+
+<section id="guide" class="section alt">
+  <div class="wrap">
+    <h2>How to use it</h2>
+    <p class="sub">A tour of the everyday workflows.</p>
+
+    <div class="feature-row">
+      <div class="copytext">
+        <span class="step">01</span>
+        <h3>Just type</h3>
+        <p>When you start a new line, a declaration keyword or a fresh statement, a grey suggestion appears. The plugin reads what the enclosing function is working towards — <code>collectActiveNames</code> accumulates, <code>validateEmail</code> checks and rejects — and asks the model to continue that thought.</p>
+        <ul class="ticks">
+          <li><kbd>Tab</kbd> to accept, <kbd>Esc</kbd> to dismiss</li>
+          <li><kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> to ask on demand</li>
+          <li>Turn off auto-trigger with <code>llmCopilot.autoTrigger: false</code></li>
+        </ul>
+      </div>
+      <figure class="window">
+        <div class="titlebar"><i></i><i></i><i></i><span>UserService.java</span></div>
+        <pre class="code"><span class="ln">12</span><span class="k">public</span> List&lt;<span class="t">String</span>&gt; <span class="f">collectActiveNames</span>(List&lt;User&gt; users) {
+<span class="ln">13</span>    List&lt;<span class="t">String</span>&gt; names = <span class="k">new</span> ArrayList&lt;&gt;();
+<span class="ln">14</span>    <span class="k">for</span> (User user : users) {
+<span class="ln">15</span>        <span class="caret"></span><span class="ghost">if (user.isActive()) {
+<span class="ln">16</span>            names.add(user.getName());
+<span class="ln">17</span>        }</span>
+<span class="ln">18</span>    }
+<span class="ln">19</span>}</pre>
+      </figure>
+    </div>
+
+    <div class="feature-row flip">
+      <div class="copytext">
+        <span class="step">02</span>
+        <h3>Ask inline</h3>
+        <p>Put the cursor in the editor — optionally select some code — press <kbd>Ctrl/Cmd</kbd>+<kbd>I</kbd> and describe the change: <i>“convert this to async/await”</i>, <i>“add null checks”</i>. The edit is applied in place. For longer conversations, open the chat panel with <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd>.</p>
+      </div>
+      <figure class="window">
+        <div class="titlebar"><i></i><i></i><i></i><span>api.js</span></div>
+        <div class="inline-chat">
+          <div class="ic-box"><span class="ic-icon">✦</span> convert this to async/await<span class="caret"></span></div>
+        </div>
+        <pre class="code"><span class="del"><span class="ln">4</span><span class="k">function</span> <span class="f">load</span>(id) {
+<span class="ln">5</span>  <span class="k">return</span> fetch(<span class="s">`/api/${id}`</span>).then(r =&gt; r.json());
+<span class="ln">6</span>}</span>
+<span class="add"><span class="ln">4</span><span class="k">async function</span> <span class="f">load</span>(id) {
+<span class="ln">5</span>  <span class="k">const</span> res = <span class="k">await</span> fetch(<span class="s">`/api/${id}`</span>);
+<span class="ln">6</span>  <span class="k">return</span> res.json();
+<span class="ln">7</span>}</span></pre>
+      </figure>
+    </div>
+
+    <div class="feature-row">
+      <div class="copytext">
+        <span class="step">03</span>
+        <h3>Get unstuck on errors</h3>
+        <p>When a terminal command fails or the debugger stops on an exception, press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd> (or right-click the output). You get a short list of candidate fixes — each with the file and line it edits and how sure the model is — written against the real declarations, callers and manifest from the project index.</p>
+        <ul class="ticks">
+          <li><b>Work it through properly</b> for a full diagnosis</li>
+          <li>Jump straight to the failing file, or any file a fix names</li>
+          <li>Java, Kotlin, Python, Node, Go, Rust, C#, Ruby, PHP and build-tool failures</li>
+        </ul>
+      </div>
+      <figure class="window">
+        <div class="titlebar"><i></i><i></i><i></i><span>LLM Copilot — Error</span></div>
+        <div class="err">
+          <div class="err-head"><b>TypeError</b>: repo.findByCustomer is not a function<small>src/orders.ts:5 · against 11 resolved names and 3 callers</small></div>
+          <ul class="fixes">
+            <li><span class="conf hi">likely</span><div>The repository is constructed without <code>await</code> in <code>bootstrap()</code> <code class="loc">src/app.ts:18</code></div></li>
+            <li><span class="conf mid">possible</span><div><code>OrderRepository</code> names it <code>findByCustomerId</code> <code class="loc">src/repo.ts:42</code></div></li>
+            <li><span class="conf lo">unlikely</span><div>A mocked repository is leaking from tests <code class="loc">test/setup.ts:7</code></div></li>
+          </ul>
+          <div class="err-actions"><span>Work it through properly</span><span>Explain this error</span><span>Ask something…</span></div>
+        </div>
+      </figure>
+    </div>
+
+    <div class="feature-row flip">
+      <div class="copytext">
+        <span class="step">04</span>
+        <h3>Act on a selection</h3>
+        <p>Select code and press <kbd>Ctrl</kbd>+<kbd>Space</kbd> for the actions menu, or go straight to one: explain, fix, refactor, generate unit tests. Put the cursor inside a class to scaffold a constructor, accessors or interface methods. Stage your changes and press <kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> for a Conventional Commits message.</p>
+      </div>
+      <figure class="window">
+        <div class="titlebar"><i></i><i></i><i></i><span>Selection actions</span></div>
+        <div class="menu">
+          <div class="menu-item on"><span>Explain Selected Code</span><kbd>⇧⌘E</kbd></div>
+          <div class="menu-item"><span>Fix Selected Code</span></div>
+          <div class="menu-item"><span>Refactor Selected Code</span><kbd>⇧⌘R</kbd></div>
+          <div class="menu-item"><span>Generate Unit Tests</span><kbd>⇧⌘T</kbd></div>
+          <div class="menu-item"><span>Generate Doc Comment</span><kbd>⇧⌘D</kbd></div>
+          <div class="menu-sep"></div>
+          <div class="menu-item"><span>Generate Constructor</span></div>
+          <div class="menu-item"><span>Generate Getters &amp; Setters</span></div>
+          <div class="menu-item"><span>Implement Interface Methods</span></div>
+        </div>
+      </figure>
+    </div>
+
+    <div class="feature-row">
+      <div class="copytext">
+        <span class="step">05</span>
+        <h3>Let it learn the codebase</h3>
+        <p>On open, every source file is read in the background into a symbol table, a two-way import graph and a digest of the project's shape. Nothing waits for it, and later sessions only re-read files that changed. Check on it with <b>LLM Copilot: Show Project Index Status</b>.</p>
+      </div>
+      <div class="snippet tall"><span class="lang">settings.json</span><button class="copy">Copy</button><pre><code>{
+  <span class="s">"llmCopilot.projectIndex.enabled"</span>: <span class="k">true</span>,
+  <span class="s">"llmCopilot.projectIndex.maxFiles"</span>: <span class="n">4000</span>,
+  <span class="s">"llmCopilot.projectIndex.maxFileSizeKb"</span>: <span class="n">256</span>,
+  <span class="s">"llmCopilot.projectIndex.exclude"</span>: [<span class="s">"**/generated/**"</span>],
+  <span class="s">"llmCopilot.projectIndex.completionBudgetChars"</span>: <span class="n">2400</span>
+}</code></pre></div>
+    </div>
+  </div>
+</section>
+
+<section id="shortcuts" class="section wrap">
+  <h2>Keyboard shortcuts</h2>
+  <p class="sub">The same bindings in both IDEs. IntelliJ uses <kbd>Ctrl</kbd> on every platform.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Action</th><th>Windows / Linux</th><th>macOS (VS Code)</th></tr></thead>
+      <tbody>
+        <tr><td>Accept / dismiss ghost text</td><td><kbd>Tab</kbd> / <kbd>Esc</kbd></td><td><kbd>Tab</kbd> / <kbd>Esc</kbd></td></tr>
+        <tr><td>Trigger completion</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd></td><td><kbd>⌘</kbd><kbd>⇧</kbd><kbd>Space</kbd></td></tr>
+        <tr><td>Inline chat</td><td><kbd>Ctrl</kbd>+<kbd>I</kbd></td><td><kbd>⌘</kbd><kbd>I</kbd></td></tr>
+        <tr><td>Open chat panel</td><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd></td><td><kbd>⌃</kbd><kbd>⌘</kbd><kbd>I</kbd></td></tr>
+        <tr><td>Selection actions menu</td><td><kbd>Ctrl</kbd>+<kbd>Space</kbd></td><td><kbd>⌃</kbd><kbd>Space</kbd></td></tr>
+        <tr><td>Explain code</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd></td><td><kbd>⌘</kbd><kbd>⇧</kbd><kbd>E</kbd></td></tr>
+        <tr><td>Refactor code</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td><kbd>⌘</kbd><kbd>⇧</kbd><kbd>R</kbd></td></tr>
+        <tr><td>Generate doc comment</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td><kbd>⌘</kbd><kbd>⇧</kbd><kbd>D</kbd></td></tr>
+        <tr><td>Generate unit tests</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td><kbd>⌘</kbd><kbd>⇧</kbd><kbd>T</kbd></td></tr>
+        <tr><td>Generate commit message</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></td><td><kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd></td></tr>
+        <tr><td>Analyse an error</td><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd></td><td><kbd>⌃</kbd><kbd>⌘</kbd><kbd>E</kbd></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="wrap">
+    <h2>Troubleshooting</h2>
+    <div class="faq">
+      <details><summary>No suggestions appear</summary><p>Run <b>LLM Copilot: Test Connection</b>. Check completions are enabled, the provider and model are spelled the way the provider expects, and — for hosted providers — that an API key is set.</p></details>
+      <details><summary>“Connection refused” with Ollama or LM Studio</summary><p>Make sure the local server is running and the base URL matches its port: <code>11434</code> for Ollama, <code>1234</code> for LM Studio.</p></details>
+      <details><summary>Changing the base URL does nothing</summary><p>Expected for hosted providers — their endpoints are fixed. The base URL only applies to Ollama, LM Studio, Azure, Claude Code and Custom.</p></details>
+      <details><summary>The Claude Code proxy isn't found</summary><p>Run <b>LLM Copilot: Diagnose Claude Code Connection</b> (VS Code) or <b>Test Connection</b> (IntelliJ) to see which port and path answered, then set them explicitly.</p></details>
+      <details><summary>Completions feel laggy or too eager</summary><p>Adjust the debounce, or turn auto-trigger off and ask on demand with <kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd>. <b>Show Project Index Status</b> reports the latency it has measured.</p></details>
+      <details><summary>Where are my API keys stored?</summary><p>In VS Code settings, and in IntelliJ's plugin settings file (<code>LLMCopilot.xml</code>) as plain text. Prefer a local provider on shared machines.</p></details>
+    </div>
+  </div>
+</section>
+
+<section class="section wrap final">
+  <img src="icon.svg" alt="" width="64" height="64">
+  <h2>Start coding with your own model</h2>
+  <div class="cta center">
+    <a class="btn primary" href="https://github.com/RA-King/llm-copilot">VS Code repository</a>
+    <a class="btn" href="https://github.com/RA-King/llm-copilot-intellij">IntelliJ repository</a>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <span>© 2026 RA King · MIT License</span>
+    <span><a href="https://github.com/RA-King/llm-copilot/blob/main/README.md">VS Code docs</a> · <a href="https://github.com/RA-King/llm-copilot-intellij/blob/main/README.md">IntelliJ docs</a></span>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
