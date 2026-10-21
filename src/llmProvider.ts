@@ -470,10 +470,10 @@ interface StreamTarget {
   dialect: StreamDialect;
 }
 
-function streamTarget(messages: ChatMessage[], cfg: LLMConfig): StreamTarget | undefined {
+function streamTarget(messages: ChatMessage[], cfg: LLMConfig, maxTokens: number): StreamTarget | undefined {
   const bearer = (key: string): Record<string, string> => key ? { Authorization: `Bearer ${key}` } : {};
   const openaiBody = (model: string) => ({
-    model, messages, max_tokens: 2048, temperature: cfg.temperature, stream: true,
+    model, messages, max_tokens: maxTokens, temperature: cfg.temperature, stream: true,
   });
 
   switch (cfg.provider) {
@@ -488,7 +488,7 @@ function streamTarget(messages: ChatMessage[], cfg: LLMConfig): StreamTarget | u
       return {
         url: 'https://api.anthropic.com/v1/messages',
         body: {
-          model: cfg.model || 'claude-3-5-sonnet-20241022', max_tokens: 2048, stream: true,
+          model: cfg.model || 'claude-3-5-sonnet-20241022', max_tokens: maxTokens, stream: true,
           system: sys || undefined, messages: messages.filter(m => m.role !== 'system'),
         },
         headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
@@ -583,11 +583,11 @@ function httpStream(target: StreamTarget, onDelta: (text: string) => void, signa
  * Providers without a usable stream answer in one piece through `onDelta`.
  */
 export async function chatStream(
-  messages: ChatMessage[], onDelta: (text: string) => void, signal?: AbortSignal
+  messages: ChatMessage[], onDelta: (text: string) => void, signal?: AbortSignal, maxTokens = 2048
 ): Promise<string> {
   const cfg = getConfig();
   messages = await withInstructions(messages);
-  const target = streamTarget(messages, cfg);
+  const target = streamTarget(messages, cfg, maxTokens);
   if (!target) {
     const reply = await dispatchChat(messages, cfg);
     if (!signal?.aborted) { onDelta(reply); }

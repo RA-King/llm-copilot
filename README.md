@@ -61,6 +61,7 @@ LLM Copilot brings ghost-text autocomplete, a streaming chat with `/` commands a
 - **Auto-formatting** — suggestions are re-indented to match your file's tab/space style and surrounding blank-line rhythm.
 - **Inline chat** (`Ctrl/Cmd+I`) — ask for a change right in the editor.
 - **AI chat sidebar** — a full chat panel in the activity bar. Replies stream in as they are written and can be stopped; `/explain`, `/fix`, `/tests`, `/doc`, `/optimize` and `/new` work on the selection, and `#file`, `#selection`, `#codebase`, `#problems`, `#changes` and `#terminalLastCommand` pull material into any question.
+- **Agent mode** — give the chat a task; it reads and searches the project, edits files, checks the problems it caused and runs your tests (each command needs your approval), then lists every change with a diff and an Undo all.
 - **Repository instructions & prompt files** — reads `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` and `AGENTS.md` the way GitHub Copilot does, and turns `.github/prompts/*.prompt.md` into chat commands.
 - **Fix with LLM Copilot** — every error and warning from any language server or linter gets *Fix* and *Explain* in its lightbulb.
 - **Code review** — review the selection or every uncommitted change; comments land in the Problems panel on the lines they are about.
@@ -630,6 +631,7 @@ Replies stream in as the model writes them; the **Send** button becomes **Stop**
 | `/doc` | Add documentation comments |
 | `/optimize` | Make it faster or leaner without changing behaviour |
 | `/new <what>` | Lay out the files for something new |
+| `/agent <task>` | Hand the task to the [agent](#agent-mode) |
 | `/clear` | Start a new conversation |
 | `/help` | List commands, prompt files and references |
 
@@ -647,6 +649,21 @@ Any prompt file in `.github/prompts` joins this list — see [prompt files](#12-
 | `#terminalLastCommand` | The last failure captured from the terminal or debugger |
 
 Each reply notes which references it used.
+
+#### Agent mode
+
+Switch the picker under the conversation from **Ask** to **Agent**, or start a message with `/agent`, and give the chat a task rather than a question. Examples: *"add input validation to the signup form and a test for it"*, *"the build is failing, fix it"*. The agent works through the task one step at a time, and each step appears in the chat as it happens:
+
+| The agent can | How |
+|---|---|
+| Look around | List files, read them in parts, search their contents, find where a symbol is declared |
+| Change things | Replace one exact passage of a file, or create or rewrite a whole file |
+| Check its work | Read the errors and warnings the language servers report for the files it edited |
+| Run commands | Tests, builds, linters, package installs — **each command waits for you** to choose *Run*, *Always run this* (for the rest of the session) or *Skip* |
+
+Edits are applied and saved as it goes, so a test it runs sees them. When it finishes, the reply lists every file it touched. **Diff** opens each file against how it was before, and **Undo all** puts every file back, deleting any it created. **Stop** ends the run at once, and a command waiting for approval counts as skipped.
+
+It works with every provider, because tool calls are written as plain tagged blocks rather than through a provider's native function calling. Larger models follow the protocol much more reliably than small local ones. The run stops after `agent.maxSteps` tool calls (25), and a command is stopped after `agent.commandTimeoutSeconds` (120). Repository instructions and `#` references apply to agent tasks as they do to questions.
 
 ### 4. Selection actions — work on highlighted code
 
@@ -945,6 +962,8 @@ All settings are under the `llmCopilot.` prefix.
 | `enabledLanguages` | string[] | `[]` | Restrict to these language IDs (empty = all). |
 | `inlineChatEnabled` | boolean | `true` | Enable `Ctrl/Cmd+I` inline chat. |
 | `testFramework` | string | `""` | Default test framework (blank = auto-detect). |
+| `agent.maxSteps` | number | `25` | Most tool calls the agent may make for one task (3–100). |
+| `agent.commandTimeoutSeconds` | number | `120` | How long an approved agent command may run before it is stopped. |
 | `customInstructions.enabled` | boolean | `true` | Follow `.github/copilot-instructions.md`, `AGENTS.md` and `.github/instructions/*.instructions.md` in chat requests. |
 | `claudeCodeBaseUrl` | string | `http://localhost:3000` | Base URL of the Claude Code proxy. |
 | `claudeCodeApiPath` | string | `""` | Override the Claude Code API path (blank = auto-detect). |
