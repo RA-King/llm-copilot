@@ -536,6 +536,9 @@ export function effectiveBudget(language: string, ceilingMs: number): number {
 
 function recordGather(language: string, durationMs: number, answered: boolean): void {
   const h = healthFor(language);
+  // A server fast enough to answer inside the clock's resolution measures 0ms,
+  // which would otherwise read as "nothing measured yet".
+  durationMs = Math.max(1, durationMs);
   h.ewmaMs = h.ewmaMs > 0 ? h.ewmaMs * 0.7 + durationMs * 0.3 : durationMs;
   if (answered) {
     h.everAnswered = true;

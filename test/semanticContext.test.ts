@@ -113,6 +113,19 @@ describe('language-server health tracking', () => {
     expect(hasLanguageServer('typescript')).toBe(true);
   });
 
+  it('counts an answer inside the clock resolution as fast, not unmeasured', async () => {
+    __setCommand('vscode.executeCompletionItemProvider', async () => ({
+      items: [{ label: 'repo', kind: 4, detail: 'Repo' }],
+    }));
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      await gatherSemanticContext(vscodeDoc(SRC), new Position(2, 4) as any, surrounding(), '    ', undefined, { budgetMs: 600 });
+      expect(effectiveBudget('typescript', 600)).toBeLessThan(600);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('stops paying for a language with no server after repeated empty answers', async () => {
     // No commands registered — every provider returns undefined.
     const doc = vscodeDoc(SRC, 'file:///a.xyz');
