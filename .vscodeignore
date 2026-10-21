@@ -1,6 +1,7 @@
-# Everything not listed here ships in the VSIX. The extension loads no files
-# from disk at runtime, so only out/, images/, README.md and LICENSE are needed
-# (package.json is always included by vsce).
+# Everything not listed here ships in the VSIX. The only files loaded from disk
+# at runtime are the chat panel's script and styles in media/, so out/, media/,
+# images/, README.md and LICENSE are what is needed (package.json is always
+# included by vsce).
 
 # Sources — compiled output in out/ is what ships.
 src/**
@@ -26,3 +27,6 @@ jest.config.js
 .DS_Store
 **/.DS_Store
 *.vsix
+
+# Project website, published separately through GitHub Pages
+docs/**

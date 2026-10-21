@@ -97,6 +97,11 @@ export class SelectionActionProvider {
         description: 'Generate documentation comment',
       },
       {
+        id: 'review',
+        label: '$(checklist) Review',
+        description: 'Comment on problems in the Problems panel',
+      },
+      {
         id: 'chat',
         label: '$(comment-discussion) Ask in chat…',
         description: 'Open AI chat with this snippet',
@@ -258,6 +263,10 @@ export class SelectionActionProvider {
           await applyOrChat(r, 'Getters/setters');
           break;
         }
+
+        case 'review':
+          await vscode.commands.executeCommand('llmCopilot.reviewSelection');
+          break;
 
         case 'chat': {
           const question = await vscode.window.showInputBox({

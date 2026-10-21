@@ -2,6 +2,8 @@ import * as https from 'https';
 import * as http from 'http';
 import * as vscode from 'vscode';
 import { StructureContext } from './structureAnalyzer';
+import { instructionsForActiveFile } from './customInstructions';
+import { LineBuffer, readDelta, StreamDialect, StreamFraming } from './streamDecoder';
 
 export type CompletionIntent = 'new-block' | 'new-statement' | 'completing-started';
 
@@ -430,8 +432,23 @@ export async function getCompletion(req: CompletionRequest): Promise<string> {
   return openaiComplete(prompt, cfg);
 }
 
+/**
+ * The repository's own instructions, folded into the system message so every
+ * chat request follows them. A request with no system message gets one.
+ */
+async function withInstructions(messages: ChatMessage[]): Promise<ChatMessage[]> {
+  const extra = await instructionsForActiveFile();
+  if (!extra) { return messages; }
+  const at = messages.findIndex(m => m.role === 'system');
+  if (at < 0) { return [{ role: 'system', content: extra }, ...messages]; }
+  return messages.map((m, i) => i === at ? { ...m, content: `${m.content}\n\n${extra}` } : m);
+}
+
 export async function chat(messages: ChatMessage[]): Promise<string> {
-  const cfg = getConfig();
+  return dispatchChat(await withInstructions(messages), getConfig());
+}
+
+function dispatchChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
   if (cfg.provider === 'ollama') return ollamaChat(messages, cfg);
   if (cfg.provider === 'anthropic') return anthropicChat(messages, cfg);
   if (cfg.provider === 'mistral') return mistralChat(messages, cfg);
@@ -441,6 +458,142 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
   if (cfg.provider === 'grok')      return grokChat(messages, cfg);
   if (cfg.provider === 'azure')     return azureChat(messages, cfg);
   return openaiChat(messages, cfg);
+}
+
+// ─── Streaming chat ───────────────────────────────────────────────────────────
+
+interface StreamTarget {
+  url: string;
+  body: Record<string, unknown>;
+  headers: Record<string, string>;
+  framing: StreamFraming;
+  dialect: StreamDialect;
+}
+
+function streamTarget(messages: ChatMessage[], cfg: LLMConfig): StreamTarget | undefined {
+  const bearer = (key: string): Record<string, string> => key ? { Authorization: `Bearer ${key}` } : {};
+  const openaiBody = (model: string) => ({
+    model, messages, max_tokens: 2048, temperature: cfg.temperature, stream: true,
+  });
+
+  switch (cfg.provider) {
+    case 'ollama':
+      return {
+        url: `${cfg.baseUrl.replace(/\/$/, '')}/api/chat`,
+        body: { model: cfg.model, messages, stream: true, options: { temperature: cfg.temperature } },
+        headers: {}, framing: 'ndjson', dialect: 'ollama',
+      };
+    case 'anthropic': {
+      const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
+      return {
+        url: 'https://api.anthropic.com/v1/messages',
+        body: {
+          model: cfg.model || 'claude-3-5-sonnet-20241022', max_tokens: 2048, stream: true,
+          system: sys || undefined, messages: messages.filter(m => m.role !== 'system'),
+        },
+        headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
+        framing: 'sse', dialect: 'anthropic',
+      };
+    }
+    case 'mistral':
+      return { url: 'https://api.mistral.ai/v1/chat/completions', body: openaiBody(cfg.model || 'mistral-large-latest'),
+        headers: bearer(cfg.apiKey), framing: 'sse', dialect: 'openai' };
+    case 'gemini':
+      return { url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+        body: openaiBody(cfg.model || 'gemini-2.5-flash'), headers: bearer(cfg.apiKey), framing: 'sse', dialect: 'openai' };
+    case 'deepseek':
+      return { url: 'https://api.deepseek.com/v1/chat/completions', body: openaiBody(cfg.model || 'deepseek-chat'),
+        headers: bearer(cfg.apiKey), framing: 'sse', dialect: 'openai' };
+    case 'grok':
+      return { url: 'https://api.x.ai/v1/chat/completions', body: openaiBody(cfg.model || 'grok-3-mini'),
+        headers: bearer(cfg.apiKey), framing: 'sse', dialect: 'openai' };
+    case 'azure': {
+      const { model: _deployment, ...body } = openaiBody('');
+      return {
+        url: `${cfg.baseUrl.replace(/\/$/, '')}/chat/completions?api-version=2024-12-01-preview`,
+        body, headers: { 'api-key': cfg.apiKey }, framing: 'sse', dialect: 'openai',
+      };
+    }
+    case 'claudecode':
+      // The community proxies differ too much in what they stream to rely on it.
+      return undefined;
+    default: {
+      const headers = bearer(cfg.apiKey);
+      if (cfg.provider === 'openrouter') { headers['HTTP-Referer'] = 'https://llm-copilot'; headers['X-Title'] = 'LLM Copilot'; }
+      return { url: `${openaiBaseUrl(cfg)}/v1/chat/completions`, body: openaiBody(cfg.model), headers, framing: 'sse', dialect: 'openai' };
+    }
+  }
+}
+
+function httpStream(target: StreamTarget, onDelta: (text: string) => void, signal?: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let parsed: URL;
+    try { parsed = new URL(target.url); }
+    catch { reject(new Error(`Invalid URL: ${target.url}`)); return; }
+
+    const isHttps = parsed.protocol === 'https:';
+    let full = '';
+    let settled = false;
+    const finish = (err?: Error) => {
+      if (settled) { return; }
+      settled = true;
+      if (err) { reject(err); } else { resolve(full); }
+    };
+
+    const req = (isHttps ? https : http).request({
+      hostname: parsed.hostname,
+      port: parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...target.headers },
+    }, (res) => {
+      res.setEncoding('utf8');
+      if (res.statusCode && res.statusCode >= 400) {
+        let data = '';
+        res.on('data', (chunk: string) => { data += chunk; });
+        res.on('end', () => finish(new Error(`HTTP ${res.statusCode}: ${data}`)));
+        return;
+      }
+      const buffer = new LineBuffer();
+      const take = (payloads: string[]) => {
+        for (const payload of payloads) {
+          const delta = readDelta(payload, target.dialect);
+          if (delta.error) { req.destroy(); finish(new Error(delta.error)); return; }
+          if (delta.text) { full += delta.text; onDelta(delta.text); }
+        }
+      };
+      res.on('data', (chunk: string) => take(buffer.push(chunk, target.framing)));
+      res.on('end', () => { take(buffer.flush(target.framing)); finish(); });
+      res.on('error', err => finish(err));
+    });
+
+    signal?.addEventListener('abort', () => { req.destroy(); finish(); });
+    req.on('error', err => finish(signal?.aborted ? undefined : err));
+    // A stream may legitimately go quiet while the model thinks; only a
+    // connection that never answers at all is treated as dead.
+    req.setTimeout(60000, () => { req.destroy(); finish(full ? undefined : new Error('Request timed out')); });
+    req.write(JSON.stringify(target.body));
+    req.end();
+  });
+}
+
+/**
+ * Chat with the reply delivered as it is written. Resolves with the whole
+ * reply; aborting keeps what has arrived so far rather than discarding it.
+ * Providers without a usable stream answer in one piece through `onDelta`.
+ */
+export async function chatStream(
+  messages: ChatMessage[], onDelta: (text: string) => void, signal?: AbortSignal
+): Promise<string> {
+  const cfg = getConfig();
+  messages = await withInstructions(messages);
+  const target = streamTarget(messages, cfg);
+  if (!target) {
+    const reply = await dispatchChat(messages, cfg);
+    if (!signal?.aborted) { onDelta(reply); }
+    return reply;
+  }
+  return httpStream(target, onDelta, signal);
 }
 
 export async function testConnection(): Promise<{ success: boolean; message: string }> {
