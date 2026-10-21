@@ -164,6 +164,16 @@
         "command": "llmCopilot.dismissGhostText",
         "title": "Dismiss Ghost Text",
         "category": "LLM Copilot"
+      },
+      {
+        "command": "llmCopilot.nextEdit.acceptOrJump",
+        "title": "Accept or Go To Next Edit Suggestion",
+        "category": "LLM Copilot"
+      },
+      {
+        "command": "llmCopilot.nextEdit.dismiss",
+        "title": "Dismiss Next Edit Suggestion",
+        "category": "LLM Copilot"
       }
     ],
     "keybindings": [
@@ -234,6 +244,16 @@
         "key": "ctrl+i",
         "mac": "cmd+i",
         "when": "terminalFocus"
+      },
+      {
+        "command": "llmCopilot.nextEdit.acceptOrJump",
+        "key": "tab",
+        "when": "llmCopilot.nextEditVisible && editorTextFocus && !editorReadonly && !inlineSuggestionVisible && !suggestWidgetVisible && !inSnippetMode"
+      },
+      {
+        "command": "llmCopilot.nextEdit.dismiss",
+        "key": "escape",
+        "when": "llmCopilot.nextEditVisible && editorTextFocus && !inlineSuggestionVisible && !suggestWidgetVisible"
       }
     ],
     "menus": {
@@ -594,6 +614,18 @@
           "minimum": 0,
           "maximum": 8,
           "description": "How much of an identifier must be typed before ghost text is worth offering. Below this the editor's own completion list is the better answer."
+        },
+        "llmCopilot.nextEdit.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "After you edit and pause, predict the edit that follows from it anywhere in the file — the other uses of something renamed, a call site of a changed signature — and show it in place. Tab jumps to it, Tab again applies it, Escape dismisses it. Each pause after an edit costs one request."
+        },
+        "llmCopilot.nextEdit.debounceMs": {
+          "type": "number",
+          "default": 800,
+          "minimum": 200,
+          "maximum": 5000,
+          "description": "How long to wait after the last edit before predicting the next one."
         },
         "llmCopilot.projectIndex.enabled": {
           "type": "boolean",

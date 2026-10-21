@@ -47,6 +47,7 @@ LLM Copilot brings ghost-text autocomplete, a streaming chat with `/` commands a
 ## Features
 
 - **Inline ghost-text completions** — Copilot-style suggestions as you type; `Tab` to accept, `Esc` to dismiss.
+- **Next edit suggestions** — after you change something, the edit that follows from it is predicted anywhere in the file and shown in place; `Tab` jumps to it and applies it.
 - **Non-intrusive by construction** — never appears over code that follows the cursor, while you are deleting, inside a string or a comment, or on a line you have just dismissed a suggestion on. Sized to the cursor: one line mid-expression, a statement on an empty line, a block only where a block was just opened.
 - **Snappy** — typing through a suggestion costs no round trip at all, and the wait before asking is set from the model's measured latency rather than a fixed guess.
 - **Knows the whole application** — every declaration and import in the project is read once in the background and kept, so a completion or a fix is written against the real signature of anything in the codebase.
@@ -596,6 +597,19 @@ If ghost text still feels slow, the remaining time is the model itself. Lower
 Setting `prefetchContext: false` disables the overlap and is only useful for
 diagnosing a problem.
 
+#### Next edit suggestions
+
+Ghost text continues what you are typing; a *next edit suggestion* follows from what you just changed. After an edit and a pause (`nextEdit.debounceMs`, 800 ms), the recent edits and the code around the cursor are sent off, and the edit they make necessary is shown where it belongs, which may be anywhere in the file: the other uses of a variable you renamed, the call site of a function that just gained a parameter, or the sibling branch that needs the same change.
+
+The text to be replaced is struck through and the new text appears beside it in green; hover for the full diff. When the suggestion is away from the cursor, a hint at the end of your line says where it is.
+
+| Key | Does |
+|---|---|
+| `Tab` | Jump to the suggestion; with the cursor already there, apply it |
+| `Esc` | Dismiss it |
+
+Applying a suggestion is itself an edit, so a rename walks through the file one `Tab` at a time. Undo and redo never trigger a prediction, and a suggestion that would undo the edit you just made is thrown away. Ghost text takes precedence: while it is showing, `Tab` accepts it as usual. Each pause after an edit costs one request; turn it off with `nextEdit.enabled`.
+
 ### 2. Inline chat — `Ctrl/Cmd+I`
 
 Put your cursor in the editor (optionally select code), press `Ctrl/Cmd+I`, and type an instruction like *"convert this to async/await"* or *"add null checks."* The result is applied inline.
@@ -905,6 +919,7 @@ Open the Command Palette (`Ctrl/Cmd+Shift+P`) and type "LLM Copilot":
 | `Ctrl+Space` | `Ctrl+Space` | Show Selection Actions (when text is selected) |
 | `Ctrl+Alt+E` | `Ctrl+Cmd+E` | Analyse a Recent Error (terminal or debugger) |
 | `Ctrl+I` (terminal focused) | `Cmd+I` (terminal focused) | Suggest Terminal Command |
+| `Tab` / `Esc` | `Tab` / `Esc` | Jump to or apply / dismiss a next edit suggestion (while one is showing) |
 
 > Some default shortcuts overlap VS Code built-ins; rebind them in **Preferences → Keyboard Shortcuts** if needed.
 
@@ -955,6 +970,8 @@ All settings are under the `llmCopilot.` prefix.
 | `ghostText.maxStatementLines` | number | `3` | Most lines a statement-sized suggestion may occupy (1–40). Longer replies are cut back to the last balanced line. |
 | `ghostText.maxBlockLines` | number | `12` | Most lines a block-sized suggestion may occupy (1–80) — the body of a block that was just opened. |
 | `ghostText.minIdentifierChars` | number | `2` | How much of an identifier must be typed before ghost text is offered (0–8). Below it, the editor's own completion list is the better answer. |
+| `nextEdit.enabled` | boolean | `true` | Predict the edit that follows from your last ones, anywhere in the file. One request per pause after an edit. |
+| `nextEdit.debounceMs` | number | `800` | Wait after the last edit before predicting the next one (200–5000 ms). |
 | `projectIndex.enabled` | boolean | `true` | Read every declaration and import in the project, in the background, so completions and error answers can use the real signatures from anywhere in the codebase. |
 | `projectIndex.maxFiles` | number | `4000` | Most source files the index will hold (100–50000). |
 | `projectIndex.maxFileSizeKb` | number | `256` | Files larger than this are skipped (16–4096 KB). |

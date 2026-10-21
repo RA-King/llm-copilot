@@ -20,6 +20,7 @@ import { ProjectIndex, IndexOptions, setProjectIndex } from './projectIndex';
 import { DiagnosticCodeActions, fixDiagnostics, buildDiagnosticExplainPrompt } from './quickFix';
 import { ReviewCommands, generatePullRequestDescription, suggestTerminalCommand } from './workflowCommands';
 import { invalidateInstructions } from './customInstructions';
+import { NextEditController } from './nextEditController';
 
 let statusBar: StatusBarManager;
 let completionProvider: LLMInlineCompletionProvider;
@@ -691,6 +692,15 @@ export function activate(context: vscode.ExtensionContext) {
         const { display, messages } = buildDiagnosticExplainPrompt(document, diagnostics);
         await chatProvider.ask(display, messages);
       }),
+  );
+
+  // ─── Next edit suggestions ────────────────────────────────────────────────
+  const nextEdit = new NextEditController();
+  nextEdit.register();
+  context.subscriptions.push(
+    nextEdit,
+    vscode.commands.registerCommand('llmCopilot.nextEdit.acceptOrJump', () => nextEdit.acceptOrJump()),
+    vscode.commands.registerCommand('llmCopilot.nextEdit.dismiss', () => nextEdit.clear()),
   );
 
   // ─── Review, pull requests, terminal commands ─────────────────────────────
