@@ -17,6 +17,9 @@ import { ErrorCaptureService } from './errorCapture';
 import { ErrorAssistant } from './errorAssist';
 import { extractMethodSignatures, buildSingleMethodImplPrompt } from './interfaceHelpers';
 import { ProjectIndex, IndexOptions, setProjectIndex } from './projectIndex';
+import { DiagnosticCodeActions, fixDiagnostics, buildDiagnosticExplainPrompt } from './quickFix';
+import { ReviewCommands, generatePullRequestDescription, suggestTerminalCommand } from './workflowCommands';
+import { invalidateInstructions } from './customInstructions';
 
 let statusBar: StatusBarManager;
 let completionProvider: LLMInlineCompletionProvider;
@@ -75,7 +78,7 @@ export function activate(context: vscode.ExtensionContext) {
   const docTrigger = new DocTriggerWatcher(statusBar);
   context.subscriptions.push({ dispose: () => docTrigger.dispose() });
 
-  const chatProvider = new ChatViewProvider(context.extensionUri);
+  const chatProvider = new ChatViewProvider(context.extensionUri, () => errorCapture.latest());
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }
@@ -501,11 +504,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ─── Generate Commit Message ──────────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand('llmCopilot.generateCommitMessage', async () => {
-      // Get git diff from source control
+    vscode.commands.registerCommand('llmCopilot.generateCommitMessage', async (scm?: { rootUri?: vscode.Uri }) => {
+      // Get git diff from source control. From the Source Control title bar the
+      // command is handed the repository it was clicked in.
       const gitExtension = vscode.extensions.getExtension('vscode.git')?.exports;
       const api = gitExtension?.getAPI(1);
-      const repo = api?.repositories?.[0];
+      const repo = api?.repositories?.find((r: any) => scm?.rootUri && r.rootUri.toString() === scm.rootUri.toString())
+        ?? api?.repositories?.[0];
+      const fromScm = !!scm?.rootUri;
 
       let diff = '';
       if (repo) {
@@ -532,6 +538,12 @@ export function activate(context: vscode.ExtensionContext) {
         const response = await chat(msgs);
         statusBar.setIdle();
         const msg = response.trim();
+
+        // Asked for from the commit box itself — fill it in, as Copilot's sparkle does.
+        if (fromScm && repo) {
+          repo.inputBox.value = msg;
+          return;
+        }
 
         // Put it in the clipboard and show it
         await vscode.env.clipboard.writeText(msg);
@@ -649,6 +661,56 @@ export function activate(context: vscode.ExtensionContext) {
         await editor.edit(eb => eb.insert(new vscode.Position(declLine!, 0), formatted + '\n'));
         vscode.window.showInformationMessage(`✅ Doc comment generated for ${decl.kind} "${decl.name}"`);
       } catch (err: any) { statusBar.setError('Error'); vscode.window.showErrorMessage(`LLM Copilot: ${err.message}`); }
+    })
+  );
+
+  // ─── Problems: fix or explain from the lightbulb ──────────────────────────
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider({ pattern: '**' }, new DiagnosticCodeActions(), {
+      providedCodeActionKinds: DiagnosticCodeActions.kinds,
+    }),
+    vscode.commands.registerCommand('llmCopilot.fixDiagnostics',
+      async (uri?: vscode.Uri, diagnostics?: vscode.Diagnostic[]) => {
+        const editor = getEditor();
+        uri = uri ?? editor?.document.uri;
+        if (!uri) { return; }
+        if (!diagnostics) {
+          const line = editor?.selection.active.line ?? 0;
+          diagnostics = vscode.languages.getDiagnostics(uri).filter(d => d.range.start.line <= line && d.range.end.line >= line);
+        }
+        if (!diagnostics.length) {
+          vscode.window.showInformationMessage('LLM Copilot: there is no problem reported on this line.');
+          return;
+        }
+        try { await fixDiagnostics(uri, diagnostics); }
+        catch (err: any) { vscode.window.showErrorMessage(`LLM Copilot: ${err.message}`); }
+      }),
+    vscode.commands.registerCommand('llmCopilot.explainDiagnostics',
+      async (uri: vscode.Uri, diagnostics: vscode.Diagnostic[]) => {
+        const document = await vscode.workspace.openTextDocument(uri);
+        const { display, messages } = buildDiagnosticExplainPrompt(document, diagnostics);
+        await chatProvider.ask(display, messages);
+      }),
+  );
+
+  // ─── Review, pull requests, terminal commands ─────────────────────────────
+  const review = new ReviewCommands(statusBar);
+  context.subscriptions.push(
+    review,
+    vscode.commands.registerCommand('llmCopilot.reviewSelection', () => review.reviewSelection()),
+    vscode.commands.registerCommand('llmCopilot.reviewChanges', () => review.reviewChanges()),
+    vscode.commands.registerCommand('llmCopilot.clearReview', () => review.clear()),
+    vscode.commands.registerCommand('llmCopilot.generatePullRequestDescription', () =>
+      generatePullRequestDescription(statusBar)),
+    vscode.commands.registerCommand('llmCopilot.suggestTerminalCommand', () =>
+      suggestTerminalCommand(statusBar)),
+  );
+
+  // Instruction files are cached for a few seconds; saving one should take
+  // effect on the very next request.
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(doc => {
+      if (/(copilot-instructions|\.instructions|AGENTS)\.md$/.test(doc.uri.path)) { invalidateInstructions(); }
     })
   );
 

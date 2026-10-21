@@ -1,7 +1,7 @@
 {
   "name": "llm-copilot",
   "displayName": "LLM Copilot",
-  "description": "AI-powered inline completions with smart scaffolding — GitHub Copilot-level features using any LLM",
+  "description": "AI-powered inline completions, streaming chat, code review and smart scaffolding — GitHub Copilot-level features using any LLM",
   "version": "0.0.5",
   "publisher": "ra-king",
   "license": "MIT",
@@ -94,7 +94,37 @@
       },
       {
         "command": "llmCopilot.generateCommitMessage",
-        "title": "LLM Copilot: Generate Commit Message"
+        "title": "LLM Copilot: Generate Commit Message",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "llmCopilot.fixDiagnostics",
+        "title": "LLM Copilot: Fix Problem on This Line"
+      },
+      {
+        "command": "llmCopilot.explainDiagnostics",
+        "title": "LLM Copilot: Explain Problem"
+      },
+      {
+        "command": "llmCopilot.reviewSelection",
+        "title": "LLM Copilot: Review Selection"
+      },
+      {
+        "command": "llmCopilot.reviewChanges",
+        "title": "LLM Copilot: Review Uncommitted Changes",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "llmCopilot.clearReview",
+        "title": "LLM Copilot: Clear Review Comments"
+      },
+      {
+        "command": "llmCopilot.generatePullRequestDescription",
+        "title": "LLM Copilot: Generate Pull Request Description"
+      },
+      {
+        "command": "llmCopilot.suggestTerminalCommand",
+        "title": "LLM Copilot: Suggest Terminal Command"
       },
       {
         "command": "llmCopilot.showSelectionActions",
@@ -198,6 +228,12 @@
         "command": "llmCopilot.dismissGhostText",
         "key": "escape",
         "when": "inlineSuggestionVisible && editorTextFocus && !editorReadonly"
+      },
+      {
+        "command": "llmCopilot.suggestTerminalCommand",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "terminalFocus"
       }
     ],
     "menus": {
@@ -256,12 +292,21 @@
           "command": "llmCopilot.showSelectionActions",
           "when": "editorHasSelection",
           "group": "llmCopilot@0"
+        },
+        {
+          "command": "llmCopilot.reviewSelection",
+          "when": "editorTextFocus",
+          "group": "llmCopilot@10"
         }
       ],
       "terminal/context": [
         {
           "command": "llmCopilot.explainTerminalError",
           "group": "llmCopilot@0"
+        },
+        {
+          "command": "llmCopilot.suggestTerminalCommand",
+          "group": "llmCopilot@1"
         }
       ],
       "debug/callstack/context": [
@@ -276,6 +321,24 @@
           "command": "llmCopilot.explainDebugError",
           "when": "inDebugMode",
           "group": "llmCopilot@0"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "llmCopilot.generateCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation@-1"
+        },
+        {
+          "command": "llmCopilot.reviewChanges",
+          "when": "scmProvider == git",
+          "group": "navigation@-1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "llmCopilot.explainDiagnostics",
+          "when": "false"
         }
       ]
     },
@@ -392,6 +455,11 @@
           "type": "string",
           "default": "",
           "description": "Default testing framework (e.g. jest, pytest, JUnit). Leave blank for auto-detect."
+        },
+        "llmCopilot.customInstructions.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Follow the repository's own instructions in every chat request: .github/copilot-instructions.md and AGENTS.md always, and .github/instructions/*.instructions.md for files matching their applyTo globs — the same files GitHub Copilot reads. Prompt files in .github/prompts/*.prompt.md become slash commands in the chat panel."
         },
         "llmCopilot.claudeCodeBaseUrl": {
           "type": "string",

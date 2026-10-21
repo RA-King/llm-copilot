@@ -1,4 +1,4 @@
-import { summariseSource } from '../src/projectIndex';
+import { summariseSource, ProjectIndex } from '../src/projectIndex';
 
 describe('summariseSource — TypeScript', () => {
   const source = [
@@ -141,5 +141,30 @@ describe('summariseSource — limits', () => {
     const long = 'export const a = ' + '1+'.repeat(300) + '1;';
     const file = summariseSource('a.ts', long, 'typescript', 1, long.length);
     expect(file.symbols).toEqual([]);
+  });
+});
+
+describe('ProjectIndex.search', () => {
+  const index = new ProjectIndex(undefined);
+  const files = (index as any).files as Map<string, unknown>;
+  const add = (path: string, source: string) => files.set(path, summariseSource(path, source, 'typescript', 1, source.length));
+  add('src/net/retry.ts', 'export class RetryPolicy {}\nexport function backoff(n: number) {}');
+  add('src/orders.ts', 'export function placeOrder() {}\nexport const retryCount = 3;');
+  add('src/ui/view.ts', 'export function render() {}');
+
+  it('ranks exact names and path matches above partial ones', () => {
+    const hits = index.search(['RetryPolicy', 'retry']);
+    expect(hits.map(h => h.path)).toEqual(['src/net/retry.ts', 'src/orders.ts']);
+    expect(hits[0].symbols.map(s => s.name)).toContain('RetryPolicy');
+  });
+
+  it('renders the matching declarations with their lines', () => {
+    const rendered = index.renderSearch(['backoff']);
+    expect(rendered).toBe('src/net/retry.ts\n  2: export function backoff(n: number) {}');
+  });
+
+  it('finds nothing for short or absent terms', () => {
+    expect(index.search(['ab'])).toEqual([]);
+    expect(index.renderSearch(['nothing'])).toBe('');
   });
 });

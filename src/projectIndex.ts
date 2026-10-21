@@ -702,6 +702,52 @@ export class ProjectIndex {
     return sections.join('\n\n');
   }
 
+  /**
+   * The files a question is about, by how many of its words they declare or
+   * are named after. An exact symbol name counts most, a path segment next, a
+   * name that merely contains the word least.
+   */
+  search(terms: string[], limit = 8): { path: string; symbols: IndexedSymbol[]; score: number }[] {
+    const wanted = [...new Set(terms.map(t => t.toLowerCase()).filter(t => t.length >= 3))];
+    if (wanted.length === 0) { return []; }
+
+    const results: { path: string; symbols: IndexedSymbol[]; score: number }[] = [];
+    for (const file of this.files.values()) {
+      const lowerPath = file.path.toLowerCase();
+      let score = 0;
+      const matched = new Set<IndexedSymbol>();
+      for (const term of wanted) {
+        if (lowerPath.includes(term)) { score += 3; }
+        for (const symbol of file.symbols) {
+          const name = symbol.name.toLowerCase();
+          if (name === term) { score += 5; matched.add(symbol); }
+          else if (name.includes(term)) { score += 2; matched.add(symbol); }
+        }
+      }
+      if (score > 0) { results.push({ path: file.path, symbols: [...matched], score }); }
+    }
+
+    return results
+      .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+      .slice(0, limit);
+  }
+
+  /** `search` rendered for a prompt, bounded by characters. */
+  renderSearch(terms: string[], budgetChars = 4000): string {
+    const blocks: string[] = [];
+    let spent = 0;
+    for (const hit of this.search(terms, 12)) {
+      const file = this.files.get(hit.path);
+      if (!file) { continue; }
+      const shown = (hit.symbols.length ? hit.symbols : file.symbols.filter(s => s.exported)).slice(0, 8);
+      const block = [hit.path, ...shown.map(s => `  ${s.line + 1}: ${s.signature}`)].join('\n');
+      if (spent + block.length > budgetChars) { break; }
+      blocks.push(block);
+      spent += block.length + 2;
+    }
+    return blocks.join('\n\n');
+  }
+
   /** Orientation rather than detail — what kind of project this is. */
   digest(): ProjectDigest {
     const byLanguage = new Map<string, number>();

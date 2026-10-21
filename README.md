@@ -2,7 +2,7 @@
 
 **AI-powered inline completions with smart scaffolding for VS Code — GitHub Copilot-level features using *any* LLM.**
 
-LLM Copilot brings ghost-text autocomplete, inline chat, code actions (explain / fix / refactor / document), class scaffolding, unit-test generation, and commit-message generation to VS Code — powered by the provider and model of *your* choice. Run it fully local and free with Ollama or LM Studio, or connect to OpenAI, Anthropic, Gemini, DeepSeek, Grok, Mistral, Groq, OpenRouter, Azure, or any OpenAI-compatible endpoint.
+LLM Copilot brings ghost-text autocomplete, a streaming chat with `/` commands and `#` references, inline chat, lightbulb fixes for any problem, code review, code actions (explain / fix / refactor / document), class scaffolding, unit-test generation, and commit-message and pull-request generation to VS Code — powered by the provider and model of *your* choice. Run it fully local and free with Ollama or LM Studio, or connect to OpenAI, Anthropic, Gemini, DeepSeek, Grok, Mistral, Groq, OpenRouter, Azure, or any OpenAI-compatible endpoint.
 
 ---
 
@@ -31,6 +31,11 @@ LLM Copilot brings ghost-text autocomplete, inline chat, code actions (explain /
   - [Inline completions (ghost text)](#1-inline-completions-ghost-text)
   - [The project index](#5-the-project-index)
   - [Terminal & debug errors](#6-terminal--debug-errors--ctrlalte)
+  - [Repository instructions & prompt files](#12-repository-instructions--prompt-files)
+  - [Fix or explain any problem](#13-fix-or-explain-any-problem--the-lightbulb)
+  - [Code review](#14-code-review)
+  - [Pull request descriptions](#15-pull-request-descriptions)
+  - [Terminal commands](#16-terminal-commands--ctrlcmdi-in-the-terminal)
 - [Commands reference](#commands-reference)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Settings reference](#settings-reference)
@@ -54,11 +59,16 @@ LLM Copilot brings ghost-text autocomplete, inline chat, code actions (explain /
 - **Duplication guard** — never suggests code that already exists in the file.
 - **Auto-formatting** — suggestions are re-indented to match your file's tab/space style and surrounding blank-line rhythm.
 - **Inline chat** (`Ctrl/Cmd+I`) — ask for a change right in the editor.
-- **AI chat sidebar** — a full chat panel in the activity bar.
+- **AI chat sidebar** — a full chat panel in the activity bar. Replies stream in as they are written and can be stopped; `/explain`, `/fix`, `/tests`, `/doc`, `/optimize` and `/new` work on the selection, and `#file`, `#selection`, `#codebase`, `#problems`, `#changes` and `#terminalLastCommand` pull material into any question.
+- **Repository instructions & prompt files** — reads `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` and `AGENTS.md` the way GitHub Copilot does, and turns `.github/prompts/*.prompt.md` into chat commands.
+- **Fix with LLM Copilot** — every error and warning from any language server or linter gets *Fix* and *Explain* in its lightbulb.
+- **Code review** — review the selection or every uncommitted change; comments land in the Problems panel on the lines they are about.
 - **Terminal & debug error assist** — a failed command or an exception in the debugger opens a pane of candidate fixes, each carrying the file and line it edits and how sure the model is. Answers are written against the declarations, callers and manifest the project index resolved, not against guesses.
 - **Code actions on a selection** — Explain, Fix, Refactor, Generate doc comment, Generate unit tests.
 - **Scaffolding** — generate a constructor, getters/setters, interface/abstract-method implementations, or all class members.
-- **Commit message generation** — Conventional Commits format from your staged diff.
+- **Commit message generation** — Conventional Commits format from your staged diff, straight into the Source Control box from its ✨ button.
+- **Pull request descriptions** — a title, summary and testing notes from the branch's commits and diff.
+- **Terminal commands** — describe what you want and get the shell command for your OS and shell (`Ctrl/Cmd+I` in the terminal).
 - **Works across 15+ languages** — TypeScript, JavaScript, Python, Java, C#, C/C++, Rust, Go, Kotlin, Swift, Ruby, PHP, Scala, Dart, and more.
 
 ---
@@ -594,6 +604,36 @@ Put your cursor in the editor (optionally select code), press `Ctrl/Cmd+I`, and 
 
 Click the **LLM Copilot** icon in the activity bar to open the **AI Chat** panel for longer, multi-turn conversations. Also available via **`LLM Copilot: Open AI Chat`** (`Ctrl+Alt+I`, or `Ctrl+Cmd+I` on macOS).
 
+Replies stream in as the model writes them; the **Send** button becomes **Stop** while one is arriving, and stopping keeps what has been written so far. Every code block can be copied, inserted at the cursor (replacing the selection), or opened as a new file; shell blocks can also be inserted into the terminal without running them.
+
+**Slash commands** — type `/` for the list. They work on the editor selection:
+
+| Command | Does |
+|---|---|
+| `/explain` | Explain how the code works |
+| `/fix` | Find and fix problems, showing the corrected code |
+| `/tests` | Write unit tests with the project's framework |
+| `/doc` | Add documentation comments |
+| `/optimize` | Make it faster or leaner without changing behaviour |
+| `/new <what>` | Lay out the files for something new |
+| `/clear` | Start a new conversation |
+| `/help` | List commands, prompt files and references |
+
+Any prompt file in `.github/prompts` joins this list — see [prompt files](#12-repository-instructions--prompt-files).
+
+**References** — type `#` anywhere in a message:
+
+| Reference | Attaches |
+|---|---|
+| `#file:src/app.ts` | That file in full (quote paths with spaces: `#file:"my file.ts"`) |
+| `#selection` | The editor selection (attached automatically while *Include selected code* is ticked) |
+| `#codebase` | The declarations in the [project index](#5-the-project-index) that match the question |
+| `#problems` | The errors and warnings in the active file |
+| `#changes` | The uncommitted git diff |
+| `#terminalLastCommand` | The last failure captured from the terminal or debugger |
+
+Each reply notes which references it used.
+
 ### 4. Selection actions — work on highlighted code
 
 Select code, then either press `Ctrl+Space` (**Show Selection Actions** — a menu of everything below) or use a specific command:
@@ -604,6 +644,7 @@ Select code, then either press `Ctrl+Space` (**Show Selection Actions** — a me
 | Fix bugs | — | Fix Selected Code |
 | Refactor | `Ctrl/Cmd+Shift+R` | Refactor Selected Code |
 | Generate unit tests | `Ctrl/Cmd+Shift+T` | Generate Unit Tests |
+| Review | — | Review Selection |
 
 Right-clicking a selection also shows these under the editor context menu.
 
@@ -746,10 +787,67 @@ Select a function or class and run **Generate Unit Tests**. Set `llmCopilot.test
 
 Stage your changes, then run **Generate Commit Message**. It reads your staged diff and writes a Conventional Commits message.
 
+From the **Source Control** view, the ✨ button in the title bar writes the message straight into the commit box of the repository it was clicked in.
+
 ### 11. Enable/disable & status
 
 - **`LLM Copilot: Toggle Enable/Disable`** turns completions on/off.
 - A status-bar item shows the current state (hide it with `llmCopilot.showStatusBar: false`).
+
+### 12. Repository instructions & prompt files
+
+LLM Copilot reads the same files GitHub Copilot does, so a repository set up for one works with the other:
+
+| File | Applies |
+|---|---|
+| `.github/copilot-instructions.md` | To every chat request |
+| `AGENTS.md` | To every chat request |
+| `.github/instructions/*.instructions.md` | To requests about files matching its `applyTo` globs |
+
+```markdown
+---
+applyTo: "**/*.py, scripts/**"
+---
+Use type hints everywhere. Prefer pathlib over os.path.
+```
+
+The instructions go at the front of every chat request — the side panel, inline chat, selection actions, fixes, reviews and generated messages. Saving one of the files takes effect on the next request. Turn it off with `llmCopilot.customInstructions.enabled`.
+
+**Prompt files** in `.github/prompts/<name>.prompt.md` become `/<name>` in the chat panel:
+
+```markdown
+---
+description: Add an endpoint with validation and a test
+---
+Add a REST endpoint for ${input:resource} to ${file}, following the existing handlers.
+Validate the request body and add a test next to the others.
+```
+
+Variables use Copilot's spelling: `${selection}`, `${file}`, `${fileBasename}`, `${fileDirname}`, `${workspaceFolder}`, and `${input:name}` / `${input:name:default}` for whatever you type after the command.
+
+### 13. Fix or explain any problem — the lightbulb
+
+Every error and warning — from TypeScript, ESLint, Pylance, rust-analyzer, or any other language server or linter — gets two entries in its lightbulb (`Ctrl/Cmd+.`):
+
+- **Fix with LLM Copilot** rewrites the lines around the problem, using the declarations the project index knows for the names involved, and applies the change as a single undoable edit.
+- **Explain with LLM Copilot** answers in the chat panel: what the problem means, why this code triggers it, and the corrected code.
+
+**`LLM Copilot: Fix Problem on This Line`** does the same from the Command Palette.
+
+### 14. Code review
+
+- **`LLM Copilot: Review Selection`** reviews the selection, or the whole file when nothing is selected.
+- **`LLM Copilot: Review Uncommitted Changes`** reviews every staged and unstaged change in the repository (also on the Source Control title bar).
+
+Comments appear in the **Problems** panel on the lines they are about, as errors, warnings or information by severity. **`LLM Copilot: Clear Review Comments`** removes them.
+
+### 15. Pull request descriptions
+
+**`LLM Copilot: Generate Pull Request Description`** reads the commits and diff between the current branch and its base (`origin/HEAD`, else `main` or `master`) and writes a title, a summary and testing notes. The result opens as a Markdown document and is copied to the clipboard.
+
+### 16. Terminal commands — `Ctrl/Cmd+I` in the terminal
+
+**`LLM Copilot: Suggest Terminal Command`** turns a description — *"find the ten largest files under src"* — into a single command for your shell and operating system, with a line explaining it. Insert it into the terminal to read before pressing Enter, run it, or copy it. Also on the terminal's context menu.
 
 ---
 
@@ -775,6 +873,12 @@ Open the Command Palette (`Ctrl/Cmd+Shift+P`) and type "LLM Copilot":
 | `LLM Copilot: Generate All Class Members` | Full class scaffold. |
 | `LLM Copilot: Generate Unit Tests` | Tests for the selection. |
 | `LLM Copilot: Generate Commit Message` | Commit message from the staged diff. |
+| `LLM Copilot: Generate Pull Request Description` | Title and description for the branch. |
+| `LLM Copilot: Review Selection` | Review the selection (or file) into the Problems panel. |
+| `LLM Copilot: Review Uncommitted Changes` | Review every uncommitted change. |
+| `LLM Copilot: Clear Review Comments` | Remove review comments from the Problems panel. |
+| `LLM Copilot: Fix Problem on This Line` | Fix the error or warning at the cursor. |
+| `LLM Copilot: Suggest Terminal Command` | A shell command from a description. |
 | `LLM Copilot: Show Selection Actions` | Quick-pick menu of actions for the selection. |
 | `LLM Copilot: Explain Terminal Error` | Read the selected (or last failed) terminal output and offer fixes. |
 | `LLM Copilot: Explain Debug Error` | Read what the debugger stopped on and offer fixes. |
@@ -800,6 +904,7 @@ Open the Command Palette (`Ctrl/Cmd+Shift+P`) and type "LLM Copilot":
 | `Ctrl+Shift+M` | `Cmd+Shift+M` | Generate Commit Message |
 | `Ctrl+Space` | `Ctrl+Space` | Show Selection Actions (when text is selected) |
 | `Ctrl+Alt+E` | `Ctrl+Cmd+E` | Analyse a Recent Error (terminal or debugger) |
+| `Ctrl+I` (terminal focused) | `Cmd+I` (terminal focused) | Suggest Terminal Command |
 
 > Some default shortcuts overlap VS Code built-ins; rebind them in **Preferences → Keyboard Shortcuts** if needed.
 
@@ -825,6 +930,7 @@ All settings are under the `llmCopilot.` prefix.
 | `enabledLanguages` | string[] | `[]` | Restrict to these language IDs (empty = all). |
 | `inlineChatEnabled` | boolean | `true` | Enable `Ctrl/Cmd+I` inline chat. |
 | `testFramework` | string | `""` | Default test framework (blank = auto-detect). |
+| `customInstructions.enabled` | boolean | `true` | Follow `.github/copilot-instructions.md`, `AGENTS.md` and `.github/instructions/*.instructions.md` in chat requests. |
 | `claudeCodeBaseUrl` | string | `http://localhost:3000` | Base URL of the Claude Code proxy. |
 | `claudeCodeApiPath` | string | `""` | Override the Claude Code API path (blank = auto-detect). |
 | `azureApiVersion` | string | `2024-12-01-preview` | Azure OpenAI API version. |
