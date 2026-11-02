@@ -619,7 +619,7 @@ Put your cursor in the editor (optionally select code), press `Ctrl/Cmd+I`, and 
 
 Click the **LLM Copilot** icon in the activity bar to open the **AI Chat** panel for longer, multi-turn conversations. Also available via **`LLM Copilot: Open AI Chat`** (`Ctrl+Alt+I`, or `Ctrl+Cmd+I` on macOS).
 
-Replies stream in as the model writes them; the **Send** button becomes **Stop** while one is arriving, and stopping keeps what has been written so far. Every code block can be copied, inserted at the cursor (replacing the selection), or opened as a new file; shell blocks can also be inserted into the terminal without running them.
+Replies stream in as the model writes them; the **Send** button becomes **Stop** while one is arriving, and stopping keeps what has been written so far. Hover over one of your own messages to **Copy** it, or **Edit** it: the question goes back into the input box and the replies after it are dropped, so the conversation carries on from the corrected question. The **↑ ↓** buttons in the header jump between your questions in a long conversation. Every code block can be copied, inserted at the cursor (replacing the selection), or opened as a new file; shell blocks can also be inserted into the terminal without running them.
 
 **Slash commands** — type `/` for the list. They work on the editor selection:
 

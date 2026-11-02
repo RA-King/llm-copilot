@@ -45,6 +45,7 @@ body {
 .icon-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
 
 #messages {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 8px;
@@ -338,3 +339,18 @@ strong { font-weight: 600; }
 .changes-title { font-weight: 600; margin-bottom: 4px; }
 .change { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 1px 0; }
 .change span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); }
+
+/* Copy / Edit on the user's own messages */
+.msg-actions { float: right; display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s; }
+.msg-user:hover .msg-actions { opacity: 1; }
+.msg-btn {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--vscode-textLink-foreground);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.msg-btn:hover { text-decoration: underline; }

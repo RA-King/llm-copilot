@@ -21,6 +21,8 @@
   let activeSuggestion = 0;
   /** The agent run being shown: its bubble, the current turn's text, and its step lines by id. */
   let agent = null;
+  /** Typed questions, numbered so the extension can rewind the history to one. */
+  let nextTurn = 1;
 
   const SHELL_LANGS = new Set(['sh', 'bash', 'zsh', 'shell', 'console', 'powershell', 'ps1', 'pwsh', 'cmd', 'fish']);
 
@@ -86,15 +88,47 @@
 
   function scrollDown() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
-  function addMessage(role, text) {
+  function addMessage(role, text, turn) {
     const div = document.createElement('div');
     div.className = 'msg msg-' + role;
-    const label = role === 'user' ? 'You' : '🤖 Assistant';
+    let label = role === 'user' ? 'You' : '🤖 Assistant';
+    if (role === 'user') {
+      div.setAttribute('data-text', text);
+      label += '<span class="msg-actions"><button class="msg-btn" data-action="copyMessage" title="Copy">Copy</button>';
+      if (turn !== undefined) {
+        div.setAttribute('data-turn', String(turn));
+        label += '<button class="msg-btn" data-action="editMessage" title="Edit and send again — the replies after it are removed">Edit</button>';
+      }
+      label += '</span>';
+    }
     div.innerHTML = '<div class="msg-label">' + label + '</div><div class="msg-content">' +
       (role === 'user' ? renderProse(text) : renderMarkdown(text)) + '</div>';
     messagesEl.appendChild(div);
     scrollDown();
     return div;
+  }
+
+  /** Takes a question back into the input box, dropping it and everything after it. */
+  function editMessage(bubble) {
+    if (busy) { return; }
+    const turn = Number(bubble.getAttribute('data-turn'));
+    vscode.postMessage({ type: 'rewind', turn });
+    while (bubble.nextSibling) { bubble.nextSibling.remove(); }
+    bubble.remove();
+    inputEl.value = bubble.getAttribute('data-text') || '';
+    inputEl.dispatchEvent(new Event('input'));
+    inputEl.focus();
+  }
+
+  /** Scrolls to the question above or below the one at the top of the view. */
+  function jumpTurn(direction) {
+    const questions = Array.from(messagesEl.querySelectorAll('.msg-user'));
+    if (!questions.length) { return; }
+    const top = messagesEl.scrollTop;
+    const target = direction < 0
+      ? questions.filter(q => q.offsetTop < top - 4).pop() || questions[0]
+      : questions.find(q => q.offsetTop > top + 4) || questions[questions.length - 1];
+    messagesEl.scrollTop = target.offsetTop;
   }
 
   function addNote(className, text) {
@@ -138,12 +172,13 @@
     const text = inputEl.value.trim();
     if (!text) { return; }
     hideSuggestions();
-    addMessage('user', text);
+    const turn = nextTurn++;
+    addMessage('user', text, turn);
     inputEl.value = '';
     inputEl.style.height = 'auto';
     setBusy(true);
     showThinking();
-    vscode.postMessage({ type: 'chat', text, includeContext: includeContextEl.checked });
+    vscode.postMessage({ type: 'chat', text, turn, includeContext: includeContextEl.checked });
   }
 
   // ── Suggestions for / and # ───────────────────────────────────────────────
@@ -252,6 +287,12 @@
       vscode.postMessage({ type: 'undoRun', runId: button.getAttribute('data-run') });
       return;
     }
+    if (action === 'copyMessage' || action === 'editMessage') {
+      const bubble = button.closest('.msg-user');
+      if (action === 'copyMessage') { navigator.clipboard.writeText(bubble.getAttribute('data-text') || '').catch(() => {}); }
+      else { editMessage(bubble); }
+      return;
+    }
     const block = codeBlocks[Number(button.getAttribute('data-id'))];
     if (!block) { return; }
     switch (button.getAttribute('data-action')) {
@@ -265,6 +306,9 @@
   document.getElementById('clear-btn').addEventListener('click', () => {
     vscode.postMessage({ type: 'clearHistory' });
   });
+
+  document.getElementById('prev-turn').addEventListener('click', () => jumpTurn(-1));
+  document.getElementById('next-turn').addEventListener('click', () => jumpTurn(1));
 
   document.getElementById('ctx-btn').addEventListener('click', () => {
     vscode.postMessage({ type: 'getContext' });

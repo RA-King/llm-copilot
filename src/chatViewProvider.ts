@@ -58,6 +58,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly approvals = new Map<string, (decision: CommandDecision) => void>();
   /** Finished agent runs whose changes can still be diffed or undone. */
   private readonly agentRuns = new Map<string, WorkspaceAgentTools>();
+  /** Where each typed turn starts in the history, so editing one can rewind to it. */
+  private readonly turnStarts = new Map<number, number>();
   private nextId = 1;
 
   constructor(
@@ -83,7 +85,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleMessage(message: any) {
     switch (message.type) {
       case 'chat':
+        if (typeof message.turn === 'number') { this.turnStarts.set(message.turn, this.conversationHistory.length); }
         await this.handleChat(message.text, message.includeContext);
+        break;
+      case 'rewind':
+        this.rewind(message.turn);
         break;
       case 'stop':
         this.running?.abort();
@@ -136,7 +142,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.approvals.clear();
     this.running = undefined;
     this.conversationHistory = [];
+    this.turnStarts.clear();
     this._view?.webview.postMessage({ type: 'historyCleared' });
+  }
+
+  /** Forget a turn and everything after it; the user is about to ask it again differently. */
+  private rewind(turn: number) {
+    const start = this.turnStarts.get(turn);
+    if (start === undefined) { return; }
+    this.running?.abort();
+    this.conversationHistory.length = Math.min(start, this.conversationHistory.length);
+    for (const t of [...this.turnStarts.keys()]) {
+      if (t >= turn) { this.turnStarts.delete(t); }
+    }
   }
 
   private async sendCommandList() {
@@ -224,11 +242,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // A conversation cleared while this was streaming has moved on without it.
       if (this.running !== controller) { return; }
       if (reply) { this.conversationHistory.push({ role: 'assistant', content: reply }); }
+      else { this.dropUnanswered(); }
       this.post({ type: 'streamEnd', text: reply, stopped: controller.signal.aborted });
     } catch (err: any) {
-      if (this.running === controller) { this.post({ type: 'error', message: err.message }); }
+      if (this.running === controller) {
+        this.dropUnanswered();
+        this.post({ type: 'error', message: err.message });
+      }
     } finally {
       if (this.running === controller) { this.running = undefined; }
+    }
+  }
+
+  /**
+   * A question that got no answer is taken back out of the history, so the
+   * next request does not carry two user turns in a row.
+   */
+  private dropUnanswered() {
+    if (this.conversationHistory[this.conversationHistory.length - 1]?.role === 'user') {
+      this.conversationHistory.pop();
     }
   }
 
@@ -296,9 +328,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       environment: this.environment(),
     }, controller.signal);
 
-    for (const resolve of this.approvals.values()) { resolve('skip'); }
-    this.approvals.clear();
-    if (this.running === controller) { this.running = undefined; }
+    // A newer request that took over has its own approvals; ours were answered when it aborted this run.
+    if (this.running === controller) {
+      for (const resolve of this.approvals.values()) { resolve('skip'); }
+      this.approvals.clear();
+      this.running = undefined;
+    }
 
     const changes = tools.changes();
     if (changes.length) {
@@ -514,6 +549,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <div id="header">
   <h2>🤖 LLM Copilot</h2>
   <div class="header-actions">
+    <button class="icon-btn" id="prev-turn" title="Previous question">↑</button>
+    <button class="icon-btn" id="next-turn" title="Next question">↓</button>
     <button class="icon-btn" id="ctx-btn" title="Get editor selection">⊞</button>
     <button class="icon-btn" id="clear-btn" title="New conversation">🗑</button>
   </div>
