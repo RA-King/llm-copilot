@@ -215,8 +215,10 @@ export class SelectionActionProvider {
           const fw = await vscode.window.showInputBox({
             prompt: 'Testing framework? (leave blank for auto)',
             placeHolder: 'jest, pytest, JUnit, go test…',
+            value: vscode.workspace.getConfiguration('llmCopilot').get<string>('testFramework', ''),
             ignoreFocusOut: true,
           });
+          if (fw === undefined) { return; }
           this.statusBar.setLoading('Generating tests…');
           const r = await chat(buildTestPrompt(code, lang, fw || undefined));
           this.statusBar.setIdle();

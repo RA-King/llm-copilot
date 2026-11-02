@@ -158,7 +158,7 @@ The three settings you'll touch most:
 | Ollama (local) | `ollama` | No | ✅ `http://localhost:11434` | `codellama`, `deepseek-coder:6.7b`, `llama3.2`, `gemma3` |
 | LM Studio (local) | `lmstudio` | No | ✅ `http://localhost:1234` | any model loaded in LM Studio |
 | OpenAI | `openai` | Yes | ❌ (fixed `api.openai.com`) | `gpt-4.1`, `gpt-4o`, `gpt-4o-mini`, `o4-mini`, `o3` |
-| Anthropic | `anthropic` | Yes | ❌ (fixed `api.anthropic.com`) | `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5-20251001` |
+| Anthropic | `anthropic` | Yes | ❌ (fixed `api.anthropic.com`) | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` |
 | Google Gemini | `gemini` | Yes | ❌ (fixed) | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-flash` |
 | DeepSeek | `deepseek` | Yes | ❌ (fixed) | `deepseek-chat`, `deepseek-coder`, `deepseek-reasoner` |
 | xAI Grok | `grok` | Yes | ❌ (fixed `api.x.ai`) | `grok-3`, `grok-3-mini`, `grok-3-fast`, `grok-2` |
@@ -232,7 +232,7 @@ Uses the Anthropic Messages API (`api.anthropic.com/v1/messages`).
    ```jsonc
    {
      "llmCopilot.provider": "anthropic",
-     "llmCopilot.model": "claude-sonnet-4-5",
+     "llmCopilot.model": "claude-sonnet-5-5",
      "llmCopilot.apiKey": "sk-ant-..."
    }
    ```
@@ -360,7 +360,7 @@ Run Claude models locally through a community proxy that wraps the Claude Code C
    ```jsonc
    {
      "llmCopilot.provider": "claudecode",
-     "llmCopilot.model": "claude-opus-4-5",
+     "llmCopilot.model": "claude-opus-5-5",
      "llmCopilot.claudeCodeBaseUrl": "http://localhost:3000"
    }
    ```

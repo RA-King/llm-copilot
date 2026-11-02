@@ -48,7 +48,7 @@ const providers = {
   },
   anthropic: {
     note: 'Uses the Messages API. Key from console.anthropic.com.',
-    cfg: { provider: 'anthropic', model: 'claude-sonnet-4-5', apiKey: 'sk-ant-...' },
+    cfg: { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: 'sk-ant-...' },
   },
   gemini: {
     note: "Uses Gemini's OpenAI-compatible endpoint. Key from aistudio.google.com/apikey.",
@@ -86,7 +86,7 @@ const providers = {
   },
   claudecode: {
     note: 'Talks to a local Claude Code proxy. Common ports and paths are discovered automatically.',
-    cfg: { provider: 'claudecode', model: 'claude-opus-4-5', claudeCodeBaseUrl: 'http://localhost:3000' },
+    cfg: { provider: 'claudecode', model: 'claude-opus-5-5', claudeCodeBaseUrl: 'http://localhost:3000' },
   },
   custom: {
     note: 'Any server that speaks the OpenAI /v1/chat/completions API.',

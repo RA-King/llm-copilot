@@ -69,6 +69,8 @@ async function httpRequest(url: string, body: object, headers: Record<string,str
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
     }, (res) => {
+      // Decode as a stream so a character split across two chunks survives.
+      res.setEncoding('utf8');
       let data = '';
       res.on('data', (chunk: string) => { data += chunk; });
       res.on('end', () => {
@@ -94,9 +96,9 @@ async function ollamaComplete(prompt: string, cfg: LLMConfig): Promise<string> {
   return JSON.parse(raw).response || '';
 }
 
-async function ollamaChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
+async function ollamaChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
   const raw = await httpRequest(`${cfg.baseUrl.replace(/\/$/, '')}/api/chat`, {
-    model: cfg.model, messages, stream: false, options: { temperature: cfg.temperature },
+    model: cfg.model, messages, stream: false, options: { temperature: cfg.temperature, num_predict: maxTokens },
   });
   return JSON.parse(raw).message?.content || '';
 }
@@ -120,37 +122,47 @@ async function openaiComplete(prompt: string, cfg: LLMConfig): Promise<string> {
   return JSON.parse(raw).choices?.[0]?.message?.content || '';
 }
 
-async function openaiChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
+async function openaiChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
   const hdrs: Record<string,string> = {};
   if (cfg.apiKey) hdrs['Authorization'] = `Bearer ${cfg.apiKey}`;
+  if (cfg.provider === 'openrouter') { hdrs['HTTP-Referer'] = 'https://llm-copilot'; hdrs['X-Title'] = 'LLM Copilot'; }
   const raw = await httpRequest(`${openaiBaseUrl(cfg)}/v1/chat/completions`, {
-    model: cfg.model, messages, max_tokens: 2048, temperature: cfg.temperature,
+    model: cfg.model, messages, max_tokens: maxTokens, temperature: cfg.temperature,
   }, hdrs);
   return JSON.parse(raw).choices?.[0]?.message?.content || '';
 }
 
-async function anthropicChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
-  const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
-  const raw = await httpRequest('https://api.anthropic.com/v1/messages', {
-    model: cfg.model || 'claude-3-5-sonnet-20241022', max_tokens: 2048,
-    system: sys || undefined, messages: messages.filter(m => m.role !== 'system'),
-  }, { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' });
-  return JSON.parse(raw).content?.[0]?.text || '';
+const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-5-5';
+
+/** The reply's text blocks joined; a thinking block may come first. */
+export function anthropicText(json: any): string {
+  const blocks: any[] = Array.isArray(json?.content) ? json.content : [];
+  return blocks.filter(b => b?.type === 'text' || (b?.type === undefined && typeof b?.text === 'string'))
+    .map(b => b.text).join('');
 }
 
-async function mistralChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
+async function anthropicChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
+  const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
+  const raw = await httpRequest('https://api.anthropic.com/v1/messages', {
+    model: cfg.model || ANTHROPIC_DEFAULT_MODEL, max_tokens: maxTokens,
+    system: sys || undefined, messages: messages.filter(m => m.role !== 'system'),
+  }, { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' });
+  return anthropicText(JSON.parse(raw));
+}
+
+async function mistralChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
   const raw = await httpRequest('https://api.mistral.ai/v1/chat/completions', {
-    model: cfg.model || 'mistral-large-latest', messages, max_tokens: 2048, temperature: cfg.temperature,
+    model: cfg.model || 'mistral-large-latest', messages, max_tokens: maxTokens, temperature: cfg.temperature,
   }, { Authorization: `Bearer ${cfg.apiKey}` });
   return JSON.parse(raw).choices?.[0]?.message?.content || '';
 }
 // ─── Google Gemini ────────────────────────────────────────────────────────────
 // Uses Gemini's OpenAI-compatible endpoint (v1beta/openai) — same format as OpenAI.
-async function geminiChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
+async function geminiChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
   const model = cfg.model || 'gemini-2.5-flash';
   const raw = await httpRequest(
     'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-    { model, messages, max_tokens: 2048, temperature: cfg.temperature },
+    { model, messages, max_tokens: maxTokens, temperature: cfg.temperature },
     { Authorization: `Bearer ${cfg.apiKey}` }
   );
   return JSON.parse(raw).choices?.[0]?.message?.content || '';
@@ -158,10 +170,10 @@ async function geminiChat(messages: ChatMessage[], cfg: LLMConfig): Promise<stri
 
 // ─── DeepSeek ─────────────────────────────────────────────────────────────────
 // OpenAI-compatible API. Great for code (deepseek-coder, deepseek-reasoner).
-async function deepseekChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
+async function deepseekChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
   const model = cfg.model || 'deepseek-chat';
   const raw = await httpRequest('https://api.deepseek.com/v1/chat/completions',
-    { model, messages, max_tokens: 2048, temperature: cfg.temperature },
+    { model, messages, max_tokens: maxTokens, temperature: cfg.temperature },
     { Authorization: `Bearer ${cfg.apiKey}` }
   );
   return JSON.parse(raw).choices?.[0]?.message?.content || '';
@@ -169,25 +181,28 @@ async function deepseekChat(messages: ChatMessage[], cfg: LLMConfig): Promise<st
 
 // ─── xAI Grok ─────────────────────────────────────────────────────────────────
 // OpenAI-compatible API.
-async function grokChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
+async function grokChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
   const model = cfg.model || 'grok-3-mini';
   const raw = await httpRequest('https://api.x.ai/v1/chat/completions',
-    { model, messages, max_tokens: 2048, temperature: cfg.temperature },
+    { model, messages, max_tokens: maxTokens, temperature: cfg.temperature },
     { Authorization: `Bearer ${cfg.apiKey}` }
   );
   return JSON.parse(raw).choices?.[0]?.message?.content || '';
+}
+
+function azureApiVersion(): string {
+  return vscode.workspace.getConfiguration('llmCopilot').get<string>('azureApiVersion', '').trim() || '2024-12-01-preview';
 }
 
 // ─── Azure OpenAI ─────────────────────────────────────────────────────────────
 // baseUrl = https://{resource}.openai.azure.com/openai/deployments/{deployment}
 // model   = deployment name (included in URL, not body)
 // apiKey  = Azure API key (header: api-key)
-async function azureChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
-  const apiVersion = '2024-12-01-preview';
+async function azureChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
   const base = cfg.baseUrl.replace(/\/$/, '');
-  const url  = `${base}/chat/completions?api-version=${apiVersion}`;
+  const url  = `${base}/chat/completions?api-version=${azureApiVersion()}`;
   const raw  = await httpRequest(url,
-    { messages, max_tokens: 2048, temperature: cfg.temperature },
+    { messages, max_tokens: maxTokens, temperature: cfg.temperature },
     { 'api-key': cfg.apiKey }
   );
   return JSON.parse(raw).choices?.[0]?.message?.content || '';
@@ -290,7 +305,7 @@ async function discoverEndpoint(cfg: LLMConfig): Promise<DiscoveredEndpoint> {
   // Return cached result if baseUrl hasn't changed
   if (_cachedEndpoint && _cachedBaseUrl === cfg.baseUrl) { return _cachedEndpoint; }
 
-  const model = cfg.model || 'claude-opus-4-5';
+  const model = cfg.model || 'claude-opus-5-5';
   const configuredBase = cfg.baseUrl.replace(/\/$/, '');
 
   // Check for explicit apiPath override in settings
@@ -350,7 +365,7 @@ async function claudeCodeRequest(
   cfg: LLMConfig,
   maxTokens: number
 ): Promise<string> {
-  const model = cfg.model || 'claude-opus-4-5';
+  const model = cfg.model || 'claude-opus-5-5';
 
   // Discover (or use cached) working endpoint
   const ep = await discoverEndpoint(cfg);
@@ -385,10 +400,6 @@ async function claudeCodeComplete(prompt: string, cfg: LLMConfig): Promise<strin
   return claudeCodeRequest([{ role: 'user', content: prompt }], cfg, cfg.maxTokens);
 }
 
-async function claudeCodeChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
-  return claudeCodeRequest(messages, cfg, 2048);
-}
-
 /** Fetch available models — tries /v1/models on the discovered port */
 export async function listClaudeCodeModels(baseUrl: string): Promise<string[]> {
   const url = `${baseUrl.replace(/\/$/, '')}/v1/models`;
@@ -402,14 +413,15 @@ export async function listClaudeCodeModels(baseUrl: string): Promise<string[]> {
       path: parsed.pathname + parsed.search,
       headers: { 'Content-Type': 'application/json' },
     }, (res) => {
+      res.setEncoding('utf8');
       let data = '';
       res.on('data', (chunk: string) => { data += chunk; });
       res.on('end', () => {
         try {
           const json = JSON.parse(data);
           const models: string[] = (json.data ?? []).map((m: { id: string }) => m.id);
-          resolve(models.length > 0 ? models : ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5-20251001']);
-        } catch { resolve(['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5-20251001']); }
+          resolve(models.length > 0 ? models : ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']);
+        } catch { resolve(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']); }
       });
     });
     req.on('error', () => resolve([]));
@@ -422,13 +434,11 @@ export async function getCompletion(req: CompletionRequest): Promise<string> {
   if (req.tokenBudget) { cfg.maxTokens = Math.min(cfg.maxTokens, req.tokenBudget); }
   const prompt = buildCompletionPrompt(req);
   if (cfg.provider === 'ollama') return ollamaComplete(prompt, cfg);
-  if (cfg.provider === 'anthropic') return anthropicChat([{ role: 'user', content: prompt }], cfg);
-  if (cfg.provider === 'mistral') return mistralChat([{ role: 'user', content: prompt }], cfg);
   if (cfg.provider === 'claudecode') return claudeCodeComplete(prompt, cfg);
-  if (cfg.provider === 'gemini')    return geminiChat([{ role: 'user', content: prompt }], cfg);
-  if (cfg.provider === 'deepseek')  return deepseekChat([{ role: 'user', content: prompt }], cfg);
-  if (cfg.provider === 'grok')      return grokChat([{ role: 'user', content: prompt }], cfg);
-  if (cfg.provider === 'azure')     return azureChat([{ role: 'user', content: prompt }], cfg);
+  if (['anthropic', 'mistral', 'gemini', 'deepseek', 'grok', 'azure'].includes(cfg.provider)) {
+    // Ghost text wants the configured ceiling, not the room a chat answer gets.
+    return dispatchChat([{ role: 'user', content: prompt }], cfg, cfg.maxTokens);
+  }
   return openaiComplete(prompt, cfg);
 }
 
@@ -448,16 +458,16 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
   return dispatchChat(await withInstructions(messages), getConfig());
 }
 
-function dispatchChat(messages: ChatMessage[], cfg: LLMConfig): Promise<string> {
-  if (cfg.provider === 'ollama') return ollamaChat(messages, cfg);
-  if (cfg.provider === 'anthropic') return anthropicChat(messages, cfg);
-  if (cfg.provider === 'mistral') return mistralChat(messages, cfg);
-  if (cfg.provider === 'claudecode') return claudeCodeChat(messages, cfg);
-  if (cfg.provider === 'gemini')    return geminiChat(messages, cfg);
-  if (cfg.provider === 'deepseek')  return deepseekChat(messages, cfg);
-  if (cfg.provider === 'grok')      return grokChat(messages, cfg);
-  if (cfg.provider === 'azure')     return azureChat(messages, cfg);
-  return openaiChat(messages, cfg);
+function dispatchChat(messages: ChatMessage[], cfg: LLMConfig, maxTokens = 2048): Promise<string> {
+  if (cfg.provider === 'ollama') return ollamaChat(messages, cfg, maxTokens);
+  if (cfg.provider === 'anthropic') return anthropicChat(messages, cfg, maxTokens);
+  if (cfg.provider === 'mistral') return mistralChat(messages, cfg, maxTokens);
+  if (cfg.provider === 'claudecode') return claudeCodeRequest(messages, cfg, maxTokens);
+  if (cfg.provider === 'gemini')    return geminiChat(messages, cfg, maxTokens);
+  if (cfg.provider === 'deepseek')  return deepseekChat(messages, cfg, maxTokens);
+  if (cfg.provider === 'grok')      return grokChat(messages, cfg, maxTokens);
+  if (cfg.provider === 'azure')     return azureChat(messages, cfg, maxTokens);
+  return openaiChat(messages, cfg, maxTokens);
 }
 
 // ─── Streaming chat ───────────────────────────────────────────────────────────
@@ -480,7 +490,7 @@ function streamTarget(messages: ChatMessage[], cfg: LLMConfig, maxTokens: number
     case 'ollama':
       return {
         url: `${cfg.baseUrl.replace(/\/$/, '')}/api/chat`,
-        body: { model: cfg.model, messages, stream: true, options: { temperature: cfg.temperature } },
+        body: { model: cfg.model, messages, stream: true, options: { temperature: cfg.temperature, num_predict: maxTokens } },
         headers: {}, framing: 'ndjson', dialect: 'ollama',
       };
     case 'anthropic': {
@@ -488,7 +498,7 @@ function streamTarget(messages: ChatMessage[], cfg: LLMConfig, maxTokens: number
       return {
         url: 'https://api.anthropic.com/v1/messages',
         body: {
-          model: cfg.model || 'claude-3-5-sonnet-20241022', max_tokens: maxTokens, stream: true,
+          model: cfg.model || ANTHROPIC_DEFAULT_MODEL, max_tokens: maxTokens, stream: true,
           system: sys || undefined, messages: messages.filter(m => m.role !== 'system'),
         },
         headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
@@ -510,7 +520,7 @@ function streamTarget(messages: ChatMessage[], cfg: LLMConfig, maxTokens: number
     case 'azure': {
       const { model: _deployment, ...body } = openaiBody('');
       return {
-        url: `${cfg.baseUrl.replace(/\/$/, '')}/chat/completions?api-version=2024-12-01-preview`,
+        url: `${cfg.baseUrl.replace(/\/$/, '')}/chat/completions?api-version=${azureApiVersion()}`,
         body, headers: { 'api-key': cfg.apiKey }, framing: 'sse', dialect: 'openai',
       };
     }
@@ -537,6 +547,7 @@ function httpStream(target: StreamTarget, onDelta: (text: string) => void, signa
     const finish = (err?: Error) => {
       if (settled) { return; }
       settled = true;
+      signal?.removeEventListener('abort', onAbort);
       if (err) { reject(err); } else { resolve(full); }
     };
 
@@ -567,7 +578,9 @@ function httpStream(target: StreamTarget, onDelta: (text: string) => void, signa
       res.on('error', err => finish(err));
     });
 
-    signal?.addEventListener('abort', () => { req.destroy(); finish(); });
+    const onAbort = () => { req.destroy(); finish(); };
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener('abort', onAbort, { once: true });
     req.on('error', err => finish(signal?.aborted ? undefined : err));
     // A stream may legitimately go quiet while the model thinks; only a
     // connection that never answers at all is treated as dead.
@@ -589,7 +602,7 @@ export async function chatStream(
   messages = await withInstructions(messages);
   const target = streamTarget(messages, cfg, maxTokens);
   if (!target) {
-    const reply = await dispatchChat(messages, cfg);
+    const reply = await dispatchChat(messages, cfg, maxTokens);
     if (!signal?.aborted) { onDelta(reply); }
     return reply;
   }
@@ -988,7 +1001,7 @@ export function buildErrorQuestionPrompt(ctx: ErrorContext, question: string): C
 /** Run diagnostic probes against a Claude Code server and return result lines */
 export async function diagnoseClaudeCode(baseUrl: string): Promise<string[]> {
   const results: string[] = [];
-  const model = vscode.workspace.getConfiguration('llmCopilot').get('model', 'claude-opus-4-5') as string;
+  const model = vscode.workspace.getConfiguration('llmCopilot').get('model', 'claude-opus-5-5') as string;
   let host = 'localhost';
   try { host = new URL(baseUrl).hostname; } catch { /* ignore */ }
 

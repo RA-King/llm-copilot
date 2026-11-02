@@ -391,7 +391,7 @@
           "enumDescriptions": [
             "Ollama (local, free) — codellama, deepseek-coder, llama3, gemma3",
             "OpenAI — gpt-4.1, gpt-4o, gpt-4o-mini, o4-mini, o3",
-            "Anthropic — claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5-20251001",
+            "Anthropic — claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5",
             "Google Gemini — gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash",
             "DeepSeek — deepseek-chat, deepseek-coder, deepseek-reasoner (great for code)",
             "xAI Grok — grok-3, grok-3-mini, grok-3-fast, grok-2",
@@ -408,7 +408,7 @@
         "llmCopilot.model": {
           "type": "string",
           "default": "codellama",
-          "description": "Model name.\nOllama: codellama, deepseek-coder:6.7b, llama3.2, gemma3\nOpenAI: gpt-4.1, gpt-4o, gpt-4o-mini, o4-mini\nAnthropic: claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5-20251001\nGemini: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash\nDeepSeek: deepseek-chat, deepseek-coder, deepseek-reasoner\nGrok: grok-3, grok-3-mini, grok-3-fast\nGroq: llama-3.3-70b-versatile, moonshotai/kimi-k2-instruct\nMistral: mistral-large-latest, codestral-latest\nAzure: your deployment name"
+          "description": "Model name.\nOllama: codellama, deepseek-coder:6.7b, llama3.2, gemma3\nOpenAI: gpt-4.1, gpt-4o, gpt-4o-mini, o4-mini\nAnthropic: claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5\nGemini: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash\nDeepSeek: deepseek-chat, deepseek-coder, deepseek-reasoner\nGrok: grok-3, grok-3-mini, grok-3-fast\nGroq: llama-3.3-70b-versatile, moonshotai/kimi-k2-instruct\nMistral: mistral-large-latest, codestral-latest\nAzure: your deployment name"
         },
         "llmCopilot.apiKey": {
           "type": "string",

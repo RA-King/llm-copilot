@@ -97,7 +97,8 @@ export class WorkspaceAgentTools implements AgentTools {
     const doc = await vscode.workspace.openTextDocument(uri);
     const total = doc.lineCount;
     const start = Math.max(1, numberArg(call, 'start_line') ?? 1);
-    const end = Math.min(total, numberArg(call, 'end_line') ?? Math.min(total, start + READ_CHUNK - 1), start + READ_CHUNK - 1);
+    // An end before the start reads one chunk from the start rather than an upside-down range.
+    const end = Math.min(total, Math.max(start, numberArg(call, 'end_line') ?? start + READ_CHUNK - 1), start + READ_CHUNK - 1);
     if (start > total) {
       return { ok: false, output: `${rel} has only ${total} lines.`, summary: `Read ${rel}: past the end` };
     }
