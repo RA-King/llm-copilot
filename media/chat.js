@@ -6,6 +6,7 @@
   const sendBtn = document.getElementById('send-btn');
   const includeContextEl = /** @type {HTMLInputElement} */ (document.getElementById('include-context'));
   const suggestionsEl = document.getElementById('suggestions');
+  const modeEl = /** @type {HTMLSelectElement} */ (document.getElementById('mode'));
 
   let busy = false;
   let thinkingEl = null;
@@ -18,6 +19,8 @@
   let references = [];
   let suggestions = [];
   let activeSuggestion = 0;
+  /** The agent run being shown: its bubble, the current turn's text, and its step lines by id. */
+  let agent = null;
 
   const SHELL_LANGS = new Set(['sh', 'bash', 'zsh', 'shell', 'console', 'powershell', 'ps1', 'pwsh', 'cmd', 'fish']);
 
@@ -230,6 +233,25 @@
   messagesEl.addEventListener('click', (e) => {
     const button = /** @type {HTMLElement} */ (e.target).closest('button[data-action]');
     if (!button) { return; }
+    const action = button.getAttribute('data-action');
+    if (action === 'approve') {
+      const card = button.closest('.approval');
+      const decision = button.getAttribute('data-decision');
+      vscode.postMessage({
+        type: 'approve', id: card.getAttribute('data-id'), command: card.getAttribute('data-command'),
+        decision: decision === 'skip' ? 'skip' : 'run', always: decision === 'always',
+      });
+      card.querySelector('.approval-buttons').textContent = decision === 'skip' ? 'Skipped.' : 'Approved.';
+      return;
+    }
+    if (action === 'diff') {
+      vscode.postMessage({ type: 'openDiff', runId: button.getAttribute('data-run'), path: button.getAttribute('data-path') });
+      return;
+    }
+    if (action === 'undo') {
+      vscode.postMessage({ type: 'undoRun', runId: button.getAttribute('data-run') });
+      return;
+    }
     const block = codeBlocks[Number(button.getAttribute('data-id'))];
     if (!block) { return; }
     switch (button.getAttribute('data-action')) {
@@ -292,6 +314,7 @@
       case 'error':
         hideThinking();
         live = null;
+        agent = null;
         setBusy(false);
         addNote('error-msg', '⚠️ ' + msg.message);
         break;
@@ -304,6 +327,7 @@
         references = msg.references;
         break;
       case 'historyCleared':
+        agent = null;
         messagesEl.innerHTML = '';
         codeBlocks.length = 0;
         hideThinking();
@@ -326,6 +350,120 @@
         inputEl.focus();
         break;
     }
+  });
+
+  // ── Mode ──────────────────────────────────────────────────────────────────
+
+  function setMode(mode) {
+    modeEl.value = mode;
+    inputEl.placeholder = mode === 'agent'
+      ? 'Describe a task — the agent reads, edits and runs commands to finish it'
+      : 'Ask about your code... (Shift+Enter for new line)';
+    vscode.postMessage({ type: 'setMode', mode });
+    try { vscode.setState({ ...(vscode.getState() || {}), mode }); } catch { /* no state store */ }
+  }
+
+  modeEl.addEventListener('change', () => setMode(modeEl.value));
+  setMode((vscode.getState() || {}).mode === 'agent' ? 'agent' : 'ask');
+
+  // ── Agent runs ────────────────────────────────────────────────────────────
+
+  function agentEvent(msg) {
+    switch (msg.type) {
+      case 'agentStart': {
+        hideThinking();
+        setBusy(true);
+        const div = addMessage('assistant', '');
+        div.classList.add('agent-run');
+        const content = div.querySelector('.msg-content');
+        if (msg.used && msg.used.length) {
+          const used = document.createElement('div');
+          used.className = 'used';
+          used.textContent = 'Used ' + msg.used.join(' · ');
+          content.appendChild(used);
+        }
+        agent = { content, text: null, steps: {} };
+        break;
+      }
+      case 'agentTurn': {
+        if (!agent) { return; }
+        if (agent.text && !agent.text.textContent.trim()) { agent.text.remove(); }
+        agent.text = document.createElement('div');
+        agent.text.className = 'agent-text';
+        agent.content.appendChild(agent.text);
+        break;
+      }
+      case 'agentText':
+        if (agent && agent.text) { agent.text.innerHTML = renderMarkdown(msg.text); }
+        break;
+      case 'agentTool': {
+        if (!agent) { return; }
+        let line = agent.steps[msg.id];
+        if (!line) {
+          line = document.createElement('div');
+          agent.content.appendChild(line);
+          agent.steps[msg.id] = line;
+        }
+        line.className = 'agent-step ' + msg.state;
+        line.textContent = (msg.state === 'running' ? '⋯ ' : msg.state === 'ok' ? '✓ ' : '✗ ') + msg.label;
+        break;
+      }
+      case 'agentApproval': {
+        if (!agent) { return; }
+        const card = document.createElement('div');
+        card.className = 'approval';
+        card.setAttribute('data-id', msg.id);
+        card.setAttribute('data-command', msg.command);
+        card.innerHTML = '<div>Run this command?</div><pre><code>' + escapeHtml(msg.command) + '</code></pre>' +
+          '<div class="approval-buttons">' +
+          '<button class="insert-btn primary" data-action="approve" data-decision="run">Run</button>' +
+          '<button class="insert-btn" data-action="approve" data-decision="always">Always run this</button>' +
+          '<button class="insert-btn" data-action="approve" data-decision="skip">Skip</button></div>';
+        agent.content.appendChild(card);
+        break;
+      }
+      case 'agentDone': {
+        if (!agent) { setBusy(false); return; }
+        if (agent.text && !agent.text.textContent.trim()) { agent.text.remove(); }
+        if (msg.status !== 'done' && msg.summary) {
+          const note = document.createElement('div');
+          note.className = msg.status === 'error' ? 'error-msg' : 'stopped';
+          note.textContent = msg.summary;
+          agent.content.appendChild(note);
+        }
+        if (msg.changes && msg.changes.length) {
+          const card = document.createElement('div');
+          card.className = 'changes';
+          card.setAttribute('data-run', msg.runId);
+          card.innerHTML = '<div class="changes-title">' + msg.changes.length + ' file' + (msg.changes.length === 1 ? '' : 's') + ' changed</div>' +
+            msg.changes.map(c => '<div class="change"><span>' + escapeHtml(c.path) + (c.created ? ' (new)' : '') + '</span>' +
+              '<button class="insert-btn" data-action="diff" data-run="' + msg.runId + '" data-path="' + escapeHtml(c.path) + '">Diff</button></div>').join('') +
+            '<div class="changes-actions"><button class="insert-btn" data-action="undo" data-run="' + msg.runId + '">Undo all</button></div>';
+          agent.content.appendChild(card);
+        }
+        const steps = document.createElement('div');
+        steps.className = 'used';
+        steps.textContent = msg.steps + ' step' + (msg.steps === 1 ? '' : 's');
+        agent.content.appendChild(steps);
+        agent = null;
+        setBusy(false);
+        scrollDown();
+        break;
+      }
+      case 'agentUndone': {
+        const card = messagesEl.querySelector('.changes[data-run="' + msg.runId + '"]');
+        if (card) {
+          card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+          card.querySelector('.changes-actions').textContent = 'Undone — ' + msg.restored + ' file' + (msg.restored === 1 ? '' : 's') + ' restored.';
+        }
+        break;
+      }
+    }
+    scrollDown();
+  }
+
+  window.addEventListener('message', (event) => {
+    if (typeof event.data.type === 'string' && event.data.type.startsWith('agent')) { agentEvent(event.data); }
   });
 
   vscode.postMessage({ type: 'listCommands' });

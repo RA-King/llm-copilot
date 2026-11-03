@@ -21,6 +21,7 @@ import { DiagnosticCodeActions, fixDiagnostics, buildDiagnosticExplainPrompt } f
 import { ReviewCommands, generatePullRequestDescription, suggestTerminalCommand } from './workflowCommands';
 import { invalidateInstructions } from './customInstructions';
 import { NextEditController } from './nextEditController';
+import { OriginalContentProvider, ORIGINAL_SCHEME } from './agentTools';
 
 let statusBar: StatusBarManager;
 let completionProvider: LLMInlineCompletionProvider;
@@ -79,7 +80,11 @@ export function activate(context: vscode.ExtensionContext) {
   const docTrigger = new DocTriggerWatcher(statusBar);
   context.subscriptions.push({ dispose: () => docTrigger.dispose() });
 
-  const chatProvider = new ChatViewProvider(context.extensionUri, () => errorCapture.latest());
+  // What files looked like before an agent run changed them, for its diffs.
+  const originals = new OriginalContentProvider();
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(ORIGINAL_SCHEME, originals));
+
+  const chatProvider = new ChatViewProvider(context.extensionUri, () => errorCapture.latest(), originals);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }

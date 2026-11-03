@@ -5,6 +5,9 @@ import { Attachment, ChatReference, parseChatInput, renderAttachments, searchTer
 import { expandPromptVariables, loadPromptFiles, PromptFile } from './promptFiles';
 import { getProjectIndex } from './projectIndex';
 import { git, repositoryRoot } from './workflowCommands';
+import { runAgent, AgentObserver } from './agentSession';
+import { CommandDecision, OriginalContentProvider, WorkspaceAgentTools } from './agentTools';
+import * as os from 'os';
 
 const SYSTEM_PROMPT =
   'You are an expert programming assistant. Help with code, debugging, architecture, ' +
@@ -27,6 +30,7 @@ const BUILT_IN_COMMANDS: { name: string; description: string; prompt?: string }[
     prompt: 'Improve the performance of this code without changing its behaviour. Show the new code and explain the gain.' },
   { name: 'new', description: 'Sketch the files for a new project or feature',
     prompt: 'Lay out the files needed for what follows. For each one give its path as a heading and its full contents in a fenced block.' },
+  { name: 'agent', description: 'Hand a task to the agent: it reads, edits and runs commands until done' },
   { name: 'clear', description: 'Start a new conversation' },
   { name: 'help', description: 'List the commands and # references' },
 ];
@@ -48,10 +52,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private conversationHistory: ChatMessage[] = [];
   private running?: AbortController;
   private promptFiles: PromptFile[] = [];
+  private mode: 'ask' | 'agent' = 'ask';
+  /** Commands the user said to always run, for the rest of this window's life. */
+  private readonly allowedCommands = new Set<string>();
+  private readonly approvals = new Map<string, (decision: CommandDecision) => void>();
+  /** Finished agent runs whose changes can still be diffed or undone. */
+  private readonly agentRuns = new Map<string, WorkspaceAgentTools>();
+  private nextId = 1;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
-    private readonly lastFailure: () => LastFailure | undefined = () => undefined
+    private readonly lastFailure: () => LastFailure | undefined = () => undefined,
+    private readonly originals: OriginalContentProvider = new OriginalContentProvider()
   ) {}
 
   resolveWebviewView(
@@ -99,11 +111,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'listCommands':
         await this.sendCommandList();
         break;
+      case 'setMode':
+        this.mode = message.mode === 'agent' ? 'agent' : 'ask';
+        break;
+      case 'approve': {
+        const resolve = this.approvals.get(message.id);
+        this.approvals.delete(message.id);
+        if (message.always && message.command) { this.allowedCommands.add(message.command); }
+        resolve?.(message.decision === 'run' ? 'run' : 'skip');
+        break;
+      }
+      case 'openDiff':
+        await this.openDiff(message.runId, message.path);
+        break;
+      case 'undoRun':
+        await this.undoRun(message.runId);
+        break;
     }
   }
 
   private clear() {
     this.running?.abort();
+    for (const resolve of this.approvals.values()) { resolve('skip'); }
+    this.approvals.clear();
     this.running = undefined;
     this.conversationHistory = [];
     this._view?.webview.postMessage({ type: 'historyCleared' });
@@ -130,7 +160,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const selection = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : '';
 
     let question = parsed.text;
-    if (parsed.command) {
+    let asAgent = this.mode === 'agent' && !parsed.command;
+    if (parsed.command === 'agent') {
+      if (!parsed.text) { this.post({ type: 'info', text: 'Give the agent a task: `/agent add input validation to the signup form`', done: true }); return; }
+      asAgent = true;
+    } else if (parsed.command) {
       if (parsed.command === 'clear') { this.clear(); return; }
       if (parsed.command === 'help') { this.post({ type: 'info', text: this.helpText(), done: true }); return; }
 
@@ -164,6 +198,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const body = renderAttachments(attachments);
     const finalText = body ? `${question}\n\n${body}` : question;
 
+    if (asAgent) {
+      await this.runAgentTask(finalText, attachments.map(a => a.label));
+      return;
+    }
+
     this.conversationHistory.push({ role: 'user', content: finalText });
     await this.respond(
       [{ role: 'system', content: SYSTEM_PROMPT }, ...this.conversationHistory],
@@ -191,6 +230,107 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       if (this.running === controller) { this.running = undefined; }
     }
+  }
+
+  // ── Agent ──────────────────────────────────────────────────────────────────
+
+  private environment(): string {
+    const root = vscode.workspace.workspaceFolders?.[0];
+    const editor = vscode.window.activeTextEditor;
+    const lines = [
+      `Operating system: ${process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : 'Linux'} (${os.release()}).`,
+      `Shell: ${vscode.env.shell || process.env.SHELL || 'default'}.`,
+      `Workspace root: ${root?.uri.fsPath ?? '(none)'}. All paths are relative to it.`,
+    ];
+    if (editor && editor.document.uri.scheme === 'file') {
+      lines.push(`The user has ${vscode.workspace.asRelativePath(editor.document.uri, false)} open` +
+        (editor.selection.isEmpty ? '.' : `, lines ${editor.selection.start.line + 1}–${editor.selection.end.line + 1} selected.`));
+    }
+    const digest = getProjectIndex()?.renderDigest();
+    if (digest) { lines.push('', digest); }
+    return lines.join('\n');
+  }
+
+  private confirm(command: string): Promise<CommandDecision> {
+    if (this.allowedCommands.has(command)) { return Promise.resolve('run'); }
+    const id = `approval-${this.nextId++}`;
+    this.post({ type: 'agentApproval', id, command });
+    const signal = this.running?.signal;
+    return new Promise(resolve => {
+      this.approvals.set(id, resolve);
+      // Stopping the run answers any question still waiting on the user.
+      signal?.addEventListener('abort', () => {
+        if (this.approvals.delete(id)) { resolve('skip'); }
+      });
+    });
+  }
+
+  private async runAgentTask(task: string, used: string[]): Promise<void> {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root) { this.post({ type: 'error', message: 'The agent needs a folder open to work in.' }); return; }
+
+    this.running?.abort();
+    const controller = new AbortController();
+    this.running = controller;
+    const cfg = vscode.workspace.getConfiguration('llmCopilot');
+    const tools = new WorkspaceAgentTools(root, command => this.confirm(command), cfg.get('agent.commandTimeoutSeconds', 120) * 1000);
+    const runId = `run-${this.nextId++}`;
+
+    let toolId = 0;
+    const observer: AgentObserver = {
+      turnStarted: step => this.post({ type: 'agentTurn', step }),
+      turnText: text => this.post({ type: 'agentText', text }),
+      toolStarted: call => this.post({ type: 'agentTool', id: ++toolId, state: 'running', label: `${call.name} …` }),
+      toolFinished: (_call, outcome) => this.post({ type: 'agentTool', id: toolId, state: outcome.ok ? 'ok' : 'failed', label: outcome.summary }),
+    };
+
+    this.post({ type: 'agentStart', used });
+    const history = this.conversationHistory.slice(-6).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 1500)}`).join('\n\n');
+    const fullTask = history ? `Earlier in this conversation:\n${history}\n\nThe task:\n${task}` : task;
+
+    const result = await runAgent(fullTask, {
+      reply: (messages, onDelta, signal) => chatStream(messages, onDelta, signal, 4096),
+    }, tools, observer, {
+      maxSteps: cfg.get('agent.maxSteps', 25),
+      historyBudget: 60000,
+      environment: this.environment(),
+    }, controller.signal);
+
+    for (const resolve of this.approvals.values()) { resolve('skip'); }
+    this.approvals.clear();
+    if (this.running === controller) { this.running = undefined; }
+
+    const changes = tools.changes();
+    if (changes.length) {
+      this.agentRuns.set(runId, tools);
+      this.originals.remember(runId, new Map(changes.map(c => [c.path, c.original])));
+    }
+    const summary = result.status === 'error' ? `The run failed: ${result.summary}`
+      : result.status === 'stopped' ? 'Stopped.' : result.summary;
+    this.conversationHistory.push({ role: 'user', content: task });
+    this.conversationHistory.push({ role: 'assistant', content: summary || '(no summary)' });
+    this.post({
+      type: 'agentDone', status: result.status, summary, steps: result.steps, runId,
+      changes: changes.map(c => ({ path: c.path, created: c.original === null })),
+    });
+  }
+
+  private async openDiff(runId: string, rel: string): Promise<void> {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root) { return; }
+    const current = vscode.Uri.joinPath(root, rel);
+    await vscode.commands.executeCommand('vscode.diff', this.originals.uriFor(runId, rel), current, `${rel} (agent changes)`);
+  }
+
+  private async undoRun(runId: string): Promise<void> {
+    const tools = this.agentRuns.get(runId);
+    if (!tools) { return; }
+    const answer = await vscode.window.showWarningMessage(
+      'Put every file this agent run changed back the way it was?', { modal: true }, 'Undo all');
+    if (answer !== 'Undo all') { return; }
+    const restored = await tools.undoAll();
+    this.agentRuns.delete(runId);
+    this.post({ type: 'agentUndone', runId, restored });
   }
 
   private helpText(): string {
@@ -384,6 +524,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <div id="suggestions" hidden></div>
 
 <div id="context-bar">
+  <select id="mode" title="Ask answers questions; Agent reads, edits and runs commands to finish a task">
+    <option value="ask">Ask</option>
+    <option value="agent">Agent</option>
+  </select>
   <label>
     <input type="checkbox" id="include-context" checked>
     Include selected code

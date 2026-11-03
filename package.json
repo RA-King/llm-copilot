@@ -481,6 +481,20 @@
           "default": true,
           "description": "Follow the repository's own instructions in every chat request: .github/copilot-instructions.md and AGENTS.md always, and .github/instructions/*.instructions.md for files matching their applyTo globs — the same files GitHub Copilot reads. Prompt files in .github/prompts/*.prompt.md become slash commands in the chat panel."
         },
+        "llmCopilot.agent.maxSteps": {
+          "type": "number",
+          "default": 25,
+          "minimum": 3,
+          "maximum": 100,
+          "description": "Most tool calls the agent may make for one task before it stops and reports where it got to."
+        },
+        "llmCopilot.agent.commandTimeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 5,
+          "maximum": 1800,
+          "description": "How long a command the agent runs (after you approve it) may take before it is stopped."
+        },
         "llmCopilot.claudeCodeBaseUrl": {
           "type": "string",
           "default": "http://localhost:3000",

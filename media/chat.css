@@ -302,3 +302,39 @@ strong { font-weight: 600; }
   background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground));
   color: var(--vscode-editorSuggestWidget-selectedForeground, var(--vscode-list-activeSelectionForeground));
 }
+
+#mode {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border);
+  border-radius: 3px;
+  font-size: 11px;
+  padding: 1px 2px;
+}
+
+.agent-text:empty { display: none; }
+
+.agent-step {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  margin: 2px 0;
+  opacity: 0.8;
+}
+.agent-step.running { opacity: 0.6; }
+.agent-step.failed { color: var(--vscode-errorForeground); }
+
+.approval, .changes {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 6px 0;
+  background: var(--vscode-editor-background);
+  font-size: 11px;
+}
+.approval-buttons, .changes-actions { display: flex; gap: 4px; margin-top: 4px; }
+.insert-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.insert-btn:disabled { opacity: 0.5; cursor: default; }
+
+.changes-title { font-weight: 600; margin-bottom: 4px; }
+.change { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 1px 0; }
+.change span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); }
