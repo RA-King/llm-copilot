@@ -1,16 +1,18 @@
 import * as http from 'http';
 import { AddressInfo } from 'net';
-import { chatStream } from '../src/llmProvider';
+import { anthropicText, chat, chatStream, getCompletion, CompletionRequest } from '../src/llmProvider';
 import { __setConfig, __resetConfig } from './__mocks__/vscode';
 
 /** A local server that answers every request with the given chunks, spaced out. */
-function serve(chunks: string[], gapMs = 5, status = 200): Promise<{ url: string; close: () => void; bodies: any[] }> {
+function serve(chunks: (string | Buffer)[], gapMs = 5, status = 200): Promise<{ url: string; close: () => void; bodies: any[]; paths: string[] }> {
   const bodies: any[] = [];
+  const paths: string[] = [];
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', async () => {
       bodies.push(JSON.parse(body));
+      paths.push(req.url ?? '');
       res.writeHead(status, { 'Content-Type': 'text/event-stream' });
       for (const chunk of chunks) {
         if (res.destroyed) { return; }
@@ -22,7 +24,7 @@ function serve(chunks: string[], gapMs = 5, status = 200): Promise<{ url: string
   });
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => {
     const { port } = server.address() as AddressInfo;
-    resolve({ url: `http://127.0.0.1:${port}`, close: () => server.close(), bodies });
+    resolve({ url: `http://127.0.0.1:${port}`, close: () => server.close(), bodies, paths });
   }));
 }
 
@@ -70,5 +72,51 @@ describe('chatStream', () => {
     __setConfig('llmCopilot', { provider: 'custom', baseUrl: server.url, model: 'm', 'customInstructions.enabled': false });
     await expect(chatStream([{ role: 'user', content: 'hi' }], () => {})).rejects.toThrow('HTTP 401');
     server.close();
+  });
+});
+
+describe('chat without streaming', () => {
+  afterEach(() => __resetConfig());
+
+  it('keeps a character whose bytes arrive in two chunks', async () => {
+    const bytes = Buffer.from('{"content":[{"type":"text","text":"café ✓"}]}', 'utf8');
+    const cut = bytes.indexOf(Buffer.from('✓')) + 1;
+    const server = await serve([bytes.subarray(0, cut), bytes.subarray(cut)]);
+    __setConfig('llmCopilot', { provider: 'claudecode', baseUrl: server.url, claudeCodeApiPath: '/v1/messages', model: 'm', 'customInstructions.enabled': false });
+    const reply = await chat([{ role: 'user', content: 'hi' }]);
+    server.close();
+    expect(reply).toBe('café ✓');
+  });
+});
+
+describe('getCompletion', () => {
+  afterEach(() => __resetConfig());
+
+  const request: CompletionRequest = {
+    prefix: 'const x = ', suffix: '', language: 'typescript', filename: 'a.ts', intent: 'completing-started', nestingDepth: 0,
+    structure: { structureKind: 'top-level', containerType: '', containerName: '', containerSignature: '', existingMembers: [],
+      bestSuggestionKind: 'next-method' } as any,
+  };
+
+  it('holds an OpenAI-compatible provider to the completion budget and the configured Azure API version', async () => {
+    const server = await serve(['{"choices":[{"message":{"content":"1;"}}]}']);
+    __setConfig('llmCopilot', {
+      provider: 'azure', baseUrl: server.url, maxTokens: 64, azureApiVersion: '2025-04-01-preview', 'customInstructions.enabled': false,
+    });
+    const reply = await getCompletion({ ...request, tokenBudget: 24 });
+    server.close();
+    expect(reply).toBe('1;');
+    expect(server.bodies[0].max_tokens).toBe(24);
+    expect(server.paths[0]).toContain('api-version=2025-04-01-preview');
+  });
+});
+
+describe('anthropicText', () => {
+  it('joins the text blocks and skips thinking', () => {
+    expect(anthropicText({ content: [{ type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'a' }, { type: 'text', text: 'b' }] })).toBe('ab');
+  });
+
+  it('is empty for a reply with no content', () => {
+    expect(anthropicText({})).toBe('');
   });
 });

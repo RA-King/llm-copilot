@@ -211,6 +211,10 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('llmCopilot.inlineChat', async () => {
       const editor = getEditor();
       if (!editor) { return; }
+      if (!vscode.workspace.getConfiguration('llmCopilot').get<boolean>('inlineChatEnabled', true)) {
+        vscode.window.showInformationMessage('LLM Copilot: Inline chat is turned off (llmCopilot.inlineChatEnabled).');
+        return;
+      }
 
       const selected = getSelectedCode(editor);
       const surrounding = getSurroundingContext(editor);
@@ -479,8 +483,10 @@ export function activate(context: vscode.ExtensionContext) {
       const framework = await vscode.window.showInputBox({
         prompt: 'Testing framework? (leave blank for auto-detect)',
         placeHolder: 'jest, pytest, JUnit, xUnit, go test…',
+        value: vscode.workspace.getConfiguration('llmCopilot').get<string>('testFramework', ''),
         ignoreFocusOut: true,
       });
+      if (framework === undefined) { return; }
 
       statusBar.setLoading('Generating tests…');
       try {
