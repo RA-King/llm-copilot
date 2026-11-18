@@ -3,6 +3,7 @@ import { findUnique, numberArg, safeRelativePath, stringArg, ToolCall } from './
 import { AgentTools, ToolOutcome } from './agentSession';
 import { numberLines } from './codeReview';
 import { runShell } from './shellCommand';
+import { scanText } from './secretScan';
 import { getProjectIndex } from './projectIndex';
 
 /**
@@ -208,7 +209,8 @@ export class WorkspaceAgentTools implements AgentTools {
 
     const removed = text.slice(found.start, found.end).split('\n').length;
     const added = replace.split('\n').length;
-    return { ok: true, output: `Edited ${rel}.`, summary: `Edited ${rel} (+${added} −${removed})` };
+    return withSecretWarning(rel, replace, doc.positionAt(found.start).line + 1,
+      { ok: true, output: `Edited ${rel}.`, summary: `Edited ${rel} (+${added} −${removed})` });
   }
 
   private async createFile(call: ToolCall): Promise<ToolOutcome> {
@@ -221,7 +223,8 @@ export class WorkspaceAgentTools implements AgentTools {
     await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
     this.edited.add(rel);
     const lines = content.split('\n').length;
-    return { ok: true, output: `${existed ? 'Overwrote' : 'Created'} ${rel}.`, summary: `${existed ? 'Rewrote' : 'Created'} ${rel} (${lines} lines)` };
+    return withSecretWarning(rel, content, 1,
+      { ok: true, output: `${existed ? 'Overwrote' : 'Created'} ${rel}.`, summary: `${existed ? 'Rewrote' : 'Created'} ${rel} (${lines} lines)` });
   }
 
   private async runCommand(call: ToolCall, signal: AbortSignal): Promise<ToolOutcome> {
@@ -260,3 +263,15 @@ export class WorkspaceAgentTools implements AgentTools {
   }
 }
 
+/** Tells the model, and the user, when what it just wrote looks like a credential. */
+function withSecretWarning(rel: string, written: string, firstLine: number, outcome: ToolOutcome): ToolOutcome {
+  const secrets = scanText(written, firstLine);
+  if (secrets.length === 0) { return outcome; }
+  const lines = secrets.map(f => `${rel}:${f.line}: possible ${f.kind} (${f.preview})`).join('\n');
+  return {
+    ...outcome,
+    output: `${outcome.output}\nWarning — this writes what looks like a secret into the code:\n${lines}\n` +
+      'Unless the user asked for exactly this, read it from configuration or an environment variable instead.',
+    summary: `${outcome.summary} — possible secret on line ${secrets[0].line}`,
+  };
+}

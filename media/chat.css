@@ -341,6 +341,7 @@ strong { font-weight: 600; }
 .change span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); }
 
 /* Copy / Edit on the user's own messages */
+.msg-time { margin-left: 6px; font-weight: normal; opacity: 0.6; font-size: 0.9em; }
 .msg-actions { float: right; display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s; }
 .msg-user:hover .msg-actions { opacity: 1; }
 .msg-btn {

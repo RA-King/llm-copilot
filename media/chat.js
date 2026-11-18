@@ -91,7 +91,7 @@
   function addMessage(role, text, turn) {
     const div = document.createElement('div');
     div.className = 'msg msg-' + role;
-    let label = role === 'user' ? 'You' : '🤖 Assistant';
+    let label = (role === 'user' ? 'You' : '🤖 Assistant') + timestamp(new Date());
     if (role === 'user') {
       div.setAttribute('data-text', text);
       label += '<span class="msg-actions"><button class="msg-btn" data-action="copyMessage" title="Copy">Copy</button>';
@@ -106,6 +106,11 @@
     messagesEl.appendChild(div);
     scrollDown();
     return div;
+  }
+
+  function timestamp(when) {
+    const time = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return '<span class="msg-time" title="' + escapeHtml(when.toLocaleString()) + '">' + escapeHtml(time) + '</span>';
   }
 
   /** Takes a question back into the input box, dropping it and everything after it. */

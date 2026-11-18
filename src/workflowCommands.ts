@@ -6,6 +6,7 @@ import { chat } from './llmProvider';
 import {
   annotateDiff, buildReviewChangesPrompt, buildReviewSelectionPrompt, parseReviewFindings, ReviewFinding,
 } from './codeReview';
+import { describeSecret, scanDiff, scanText, SecretFinding } from './secretScan';
 import { buildPullRequestPrompt, buildTerminalCommandPrompt, parseTerminalSuggestion } from './assistPrompts';
 
 /**
@@ -59,7 +60,8 @@ export class ReviewCommands implements vscode.Disposable {
     if (!findings) { return; }
 
     this.diagnostics.delete(doc.uri);
-    const inRange = findings.filter(f => f.line >= range.start.line + 1 && f.line <= range.end.line + 1);
+    const inRange = findings.filter(f => f.line >= range.start.line + 1 && f.line <= range.end.line + 1)
+      .concat(secretFindings(scanText(doc.getText(range), range.start.line + 1)));
     this.diagnostics.set(doc.uri, inRange.map(f => this.toDiagnostic(doc, f)));
     this.report(inRange.length);
   }
@@ -78,8 +80,10 @@ export class ReviewCommands implements vscode.Disposable {
       return;
     }
 
-    const findings = await this.ask('Reviewing changes…', buildReviewChangesPrompt(annotateDiff(diff).slice(0, 30000)));
-    if (!findings) { return; }
+    const reviewed = await this.ask('Reviewing changes…', buildReviewChangesPrompt(annotateDiff(diff).slice(0, 30000)));
+    if (!reviewed) { return; }
+    // The model only sees the first 30,000 characters; the secret scan reads every added line.
+    const findings = reviewed.concat(secretFindings(scanDiff(diff)));
 
     this.diagnostics.clear();
     const byFile = new Map<string, vscode.Diagnostic[]>();
@@ -114,7 +118,7 @@ export class ReviewCommands implements vscode.Disposable {
     }
   }
 
-  private toDiagnostic(doc: vscode.TextDocument, f: ReviewFinding): vscode.Diagnostic {
+  private toDiagnostic(doc: vscode.TextDocument, f: ReviewFinding & { secret?: boolean }): vscode.Diagnostic {
     const line = Math.min(Math.max(f.line - 1, 0), doc.lineCount - 1);
     const text = doc.lineAt(line);
     const range = new vscode.Range(line, text.firstNonWhitespaceCharacterIndex, line, text.text.length);
@@ -122,7 +126,7 @@ export class ReviewCommands implements vscode.Disposable {
       : f.severity === 'warning' ? vscode.DiagnosticSeverity.Warning
       : vscode.DiagnosticSeverity.Information;
     const diagnostic = new vscode.Diagnostic(range, f.message, severity);
-    diagnostic.source = 'LLM Copilot review';
+    diagnostic.source = f.secret ? 'LLM Copilot secret scan' : 'LLM Copilot review';
     return diagnostic;
   }
 
@@ -139,6 +143,10 @@ export class ReviewCommands implements vscode.Disposable {
   }
 
   dispose(): void { this.diagnostics.dispose(); }
+}
+
+function secretFindings(found: SecretFinding[]): (ReviewFinding & { secret: boolean })[] {
+  return found.map(f => ({ file: f.file, line: f.line, severity: 'error', message: describeSecret(f), secret: true }));
 }
 
 // ─── Pull request description ─────────────────────────────────────────────────
