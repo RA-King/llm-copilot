@@ -661,7 +661,7 @@ Switch the picker under the conversation from **Ask** to **Agent**, or start a m
 | Check its work | Read the errors and warnings the language servers report for the files it edited |
 | Run commands | Tests, builds, linters, package installs — **each command waits for you** to choose *Run*, *Always run this* (for the rest of the session) or *Skip* |
 
-Edits are applied and saved as it goes, so a test it runs sees them. When it finishes, the reply lists every file it touched. **Diff** opens each file against how it was before, and **Undo all** puts every file back, deleting any it created. **Stop** ends the run at once, and a command waiting for approval counts as skipped.
+Edits are applied and saved as it goes, so a test it runs sees them. When it finishes, the reply lists every file it touched. **Diff** opens each file against how it was before, and **Undo all** puts every file back, deleting any it created. **Stop** ends the run at once, along with anything a running command started, and a command waiting for approval counts as skipped.
 
 It works with every provider, because tool calls are written as plain tagged blocks rather than through a provider's native function calling. Larger models follow the protocol much more reliably than small local ones. The run stops after `agent.maxSteps` tool calls (25), and a command is stopped after `agent.commandTimeoutSeconds` (120). Repository instructions and `#` references apply to agent tasks as they do to questions.
 
@@ -837,7 +837,7 @@ LLM Copilot reads the same files GitHub Copilot does, so a repository set up for
 
 ```markdown
 ---
-applyTo: "**/*.py, scripts/**"
+applyTo: "**/*.{py,pyi}, scripts/**"
 ---
 Use type hints everywhere. Prefer pathlib over os.path.
 ```

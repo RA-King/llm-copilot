@@ -49,14 +49,32 @@ function unquote(value: string): string {
   return value;
 }
 
-/** `applyTo: "**\/*.ts, src/**"` → the individual globs. */
+/** `applyTo: "**\/*.ts, src/**"` → the individual globs. Commas inside `{a,b}` stay put. */
 export function splitGlobs(value: string | undefined): string[] {
   if (!value) { return []; }
-  return value.replace(/^\[|\]$/g, '').split(',').map(g => unquote(g.trim())).filter(Boolean);
+  return splitTopLevel(value.replace(/^\[|\]$/g, '')).map(g => unquote(g.trim())).filter(Boolean);
+}
+
+function splitTopLevel(value: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (c === '{') { depth++; }
+    else if (c === '}' && depth > 0) { depth--; }
+    else if (c === ',' && depth === 0) { parts.push(value.slice(start, i)); start = i + 1; }
+  }
+  parts.push(value.slice(start));
+  return parts;
 }
 
 /** A minimal glob: `**` crosses directories, `*` and `?` do not, `{a,b}` alternates. */
 export function globToRegExp(glob: string): RegExp {
+  return new RegExp(`^${globSource(glob)}$`);
+}
+
+function globSource(glob: string): string {
   let out = '';
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
@@ -71,19 +89,29 @@ export function globToRegExp(glob: string): RegExp {
     } else if (c === '?') {
       out += '[^/]';
     } else if (c === '{') {
-      const end = glob.indexOf('}', i);
+      const end = closingBrace(glob, i);
       if (end < 0) { out += '\\{'; continue; }
-      out += '(?:' + glob.slice(i + 1, end).split(',').map(escapeRegExp).join('|') + ')';
+      // Each alternative is a glob of its own: {*.ts,*.tsx} is two patterns, not two literals.
+      out += '(?:' + splitTopLevel(glob.slice(i + 1, end)).map(globSource).join('|') + ')';
       i = end;
     } else {
       out += escapeRegExp(c);
     }
   }
-  return new RegExp(`^${out}$`);
+  return out;
+}
+
+function closingBrace(glob: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < glob.length; i++) {
+    if (glob[i] === '{') { depth++; }
+    else if (glob[i] === '}' && --depth === 0) { return i; }
+  }
+  return -1;
 }
 
 function escapeRegExp(s: string): string {
-  return s.replace(/[.+^$()|[\]\\]/g, '\\$&');
+  return s.replace(/[.+^$(){}|[\]\\]/g, '\\$&');
 }
 
 export function appliesTo(file: InstructionFile, relPath: string | undefined): boolean {

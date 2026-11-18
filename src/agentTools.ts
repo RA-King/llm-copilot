@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
-import { exec } from 'child_process';
 import { findUnique, numberArg, safeRelativePath, stringArg, ToolCall } from './agentProtocol';
 import { AgentTools, ToolOutcome } from './agentSession';
 import { numberLines } from './codeReview';
+import { runShell } from './shellCommand';
 import { getProjectIndex } from './projectIndex';
 
 /**
@@ -230,23 +230,17 @@ export class WorkspaceAgentTools implements AgentTools {
       return { ok: false, output: 'The user chose not to run this command. Carry on without it, or finish and explain what is left.', summary: `Skipped: ${command}` };
     }
 
-    return new Promise(resolve => {
-      const child = exec(command, {
-        cwd: this.root.fsPath, timeout: this.commandTimeoutMs, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, CI: '1' },
-      }, (err, stdout, stderr) => {
-        signal.removeEventListener('abort', kill);
-        const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0;
-        const killed = err && (err as any).killed;
-        const output = [stdout, stderr].filter(s => s.trim()).join('\n') || '(no output)';
-        resolve({
-          ok: code === 0,
-          output: `${killed ? `Stopped after ${this.commandTimeoutMs / 1000}s.\n` : ''}Exit code ${code}\n${output}`,
-          summary: `Ran ${command} — ${killed ? 'timed out' : `exit ${code}`}`,
-        });
-      });
-      const kill = () => child.kill();
-      signal.addEventListener('abort', kill);
+    const result = await runShell(command, {
+      cwd: this.root.fsPath, timeoutMs: this.commandTimeoutMs, signal, env: { ...process.env, CI: '1' },
     });
+    const output = result.output.trim() ? result.output : '(no output)';
+    if (result.timedOut) {
+      return { ok: false, output: `Stopped after ${this.commandTimeoutMs / 1000}s.\n${output}`, summary: `Ran ${command} — timed out` };
+    }
+    if (result.stopped) {
+      return { ok: false, output: `Stopped.\n${output}`, summary: `Ran ${command} — stopped` };
+    }
+    return { ok: result.code === 0, output: `Exit code ${result.code}\n${output}`, summary: `Ran ${command} — exit ${result.code}` };
   }
 
   /** Put every touched file back the way the agent found it. */
@@ -265,3 +259,4 @@ export class WorkspaceAgentTools implements AgentTools {
     return restored;
   }
 }
+

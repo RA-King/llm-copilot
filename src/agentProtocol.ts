@@ -182,6 +182,9 @@ export function findUnique(text: string, search: string): { start: number; end: 
   const norm = (s: string) => s.replace(/\r\n/g, '\n').split('\n').map(l => l.trimEnd()).join('\n');
   const lines = text.split('\n');
   const wanted = norm(search).split('\n');
+  // A quote ending in a newline means "up to the end of that line", not "and then a blank line".
+  const throughNewline = wanted.length > 1 && wanted[wanted.length - 1] === '';
+  if (throughNewline) { wanted.pop(); }
   const offsets: number[] = [];
   let o = 0;
   for (const line of lines) { offsets.push(o); o += line.length + 1; }
@@ -191,7 +194,8 @@ export function findUnique(text: string, search: string): { start: number; end: 
   }
   if (hits.length === 1) {
     const last = hits[0] + wanted.length - 1;
-    return { start: offsets[hits[0]], end: offsets[last] + lines[last].replace(/\r$/, '').length };
+    const end = throughNewline && last + 1 < lines.length ? offsets[last + 1] : offsets[last] + lines[last].replace(/\r$/, '').length;
+    return { start: offsets[hits[0]], end };
   }
   if (hits.length > 1) { return `search matches ${hits.length} places; include more surrounding lines so it matches one`; }
   return 'search text not found in the file; read the file again and quote it exactly';
