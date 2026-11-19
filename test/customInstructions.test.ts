@@ -27,6 +27,18 @@ describe('globs', () => {
     expect(globToRegExp('src/**').test('src/a/b.ts')).toBe(true);
     expect(globToRegExp('**/*.{js,jsx}').test('app/x.jsx')).toBe(true);
   });
+
+  it('keeps a brace list in one glob', () => {
+    expect(splitGlobs('**/*.{ts,tsx}, docs/**')).toEqual(['**/*.{ts,tsx}', 'docs/**']);
+    expect(globToRegExp(splitGlobs('**/*.{ts,tsx}')[0]).test('src/view.tsx')).toBe(true);
+  });
+
+  it('reads wildcards inside a brace list', () => {
+    const glob = globToRegExp('src/{*.ts,lib/**}');
+    expect(glob.test('src/a.ts')).toBe(true);
+    expect(glob.test('src/lib/x/y.js')).toBe(true);
+    expect(glob.test('src/a.js')).toBe(false);
+  });
 });
 
 describe('composeInstructions', () => {

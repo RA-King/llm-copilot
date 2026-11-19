@@ -64,7 +64,7 @@ LLM Copilot brings ghost-text autocomplete, a streaming chat with `/` commands a
 - **Agent mode** — give the chat a task; it reads and searches the project, edits files, checks the problems it caused and runs your tests (each command needs your approval), then lists every change with a diff and an Undo all.
 - **Repository instructions & prompt files** — reads `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` and `AGENTS.md` the way GitHub Copilot does, and turns `.github/prompts/*.prompt.md` into chat commands.
 - **Fix with LLM Copilot** — every error and warning from any language server or linter gets *Fix* and *Explain* in its lightbulb.
-- **Code review** — review the selection or every uncommitted change; comments land in the Problems panel on the lines they are about.
+- **Code review** — review the selection or every uncommitted change; comments land in the Problems panel on the lines they are about, and keys, tokens and passwords written into the code are flagged on the spot.
 - **Terminal & debug error assist** — a failed command or an exception in the debugger opens a pane of candidate fixes, each carrying the file and line it edits and how sure the model is. Answers are written against the declarations, callers and manifest the project index resolved, not against guesses.
 - **Code actions on a selection** — Explain, Fix, Refactor, Generate doc comment, Generate unit tests.
 - **Scaffolding** — generate a constructor, getters/setters, interface/abstract-method implementations, or all class members.
@@ -619,7 +619,7 @@ Put your cursor in the editor (optionally select code), press `Ctrl/Cmd+I`, and 
 
 Click the **LLM Copilot** icon in the activity bar to open the **AI Chat** panel for longer, multi-turn conversations. Also available via **`LLM Copilot: Open AI Chat`** (`Ctrl+Alt+I`, or `Ctrl+Cmd+I` on macOS).
 
-Replies stream in as the model writes them; the **Send** button becomes **Stop** while one is arriving, and stopping keeps what has been written so far. Hover over one of your own messages to **Copy** it, or **Edit** it: the question goes back into the input box and the replies after it are dropped, so the conversation carries on from the corrected question. The **↑ ↓** buttons in the header jump between your questions in a long conversation. Every code block can be copied, inserted at the cursor (replacing the selection), or opened as a new file; shell blocks can also be inserted into the terminal without running them.
+Replies stream in as the model writes them; the **Send** button becomes **Stop** while one is arriving, and stopping keeps what has been written so far. Hover over one of your own messages to **Copy** it, or **Edit** it: the question goes back into the input box and the replies after it are dropped, so the conversation carries on from the corrected question. The **↑ ↓** buttons in the header jump between your questions in a long conversation, and every message shows the time it was sent; hover for the date. Every code block can be copied, inserted at the cursor (replacing the selection), or opened as a new file; shell blocks can also be inserted into the terminal without running them.
 
 **Slash commands** — type `/` for the list. They work on the editor selection:
 
@@ -661,7 +661,7 @@ Switch the picker under the conversation from **Ask** to **Agent**, or start a m
 | Check its work | Read the errors and warnings the language servers report for the files it edited |
 | Run commands | Tests, builds, linters, package installs — **each command waits for you** to choose *Run*, *Always run this* (for the rest of the session) or *Skip* |
 
-Edits are applied and saved as it goes, so a test it runs sees them. When it finishes, the reply lists every file it touched. **Diff** opens each file against how it was before, and **Undo all** puts every file back, deleting any it created. **Stop** ends the run at once, and a command waiting for approval counts as skipped.
+Edits are applied and saved as it goes, so a test it runs sees them. When it finishes, the reply lists every file it touched. **Diff** opens each file against how it was before, and **Undo all** puts every file back, deleting any it created. **Stop** ends the run at once, along with anything a running command started, and a command waiting for approval counts as skipped. If the agent writes something that looks like a key, token or password into a file, the step says so and the agent is told to read it from configuration instead.
 
 It works with every provider, because tool calls are written as plain tagged blocks rather than through a provider's native function calling. Larger models follow the protocol much more reliably than small local ones. The run stops after `agent.maxSteps` tool calls (25), and a command is stopped after `agent.commandTimeoutSeconds` (120). Repository instructions and `#` references apply to agent tasks as they do to questions.
 
@@ -837,7 +837,7 @@ LLM Copilot reads the same files GitHub Copilot does, so a repository set up for
 
 ```markdown
 ---
-applyTo: "**/*.py, scripts/**"
+applyTo: "**/*.{py,pyi}, scripts/**"
 ---
 Use type hints everywhere. Prefer pathlib over os.path.
 ```
@@ -871,6 +871,8 @@ Every error and warning — from TypeScript, ESLint, Pylance, rust-analyzer, or 
 - **`LLM Copilot: Review Uncommitted Changes`** reviews every staged and unstaged change in the repository (also on the Source Control title bar).
 
 Comments appear in the **Problems** panel on the lines they are about, as errors, warnings or information by severity. **`LLM Copilot: Clear Review Comments`** removes them.
+
+Both reviews also scan for **secrets** — cloud and API keys (AWS, GitHub, GitLab, OpenAI, Anthropic, Google, Slack, Stripe, npm, Hugging Face, SendGrid), private keys, tokens, and passwords assigned in code or held in a connection string. For uncommitted changes only the lines the change adds are scanned, and every one of them is, however large the diff. Each hit is an error with the value masked, from `LLM Copilot secret scan`; placeholders such as `changeme` or `${DB_PASSWORD}` are left alone.
 
 ### 15. Pull request descriptions
 

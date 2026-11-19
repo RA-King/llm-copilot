@@ -112,6 +112,14 @@ describe('findUnique', () => {
     expect(findUnique(text, 'const c = 3;')).toMatch(/not found/);
     expect(findUnique(text, '')).toBe('search is empty');
   });
+
+  it('takes a trailing newline in the quote as the end of its last line', () => {
+    const file = 'x = 1;  \ny = 2;\nz = 3;\n';
+    const found = findUnique(file, 'x = 1;\ny = 2;\n');
+    expect(found).toEqual({ start: 0, end: 16 });
+    const { start, end } = found as { start: number; end: number };
+    expect(file.slice(0, start) + 'w = 0;\n' + file.slice(end)).toBe('w = 0;\nz = 3;\n');
+  });
 });
 
 describe('safeRelativePath', () => {
